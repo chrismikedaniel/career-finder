@@ -499,29 +499,29 @@ Return JSON:
 // ─────────────────────────────────────────────────────────────────────────────
 // SAVED ROLES PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-const BELLA_EMAIL = "chris@danielhunsicker.com";
+const BELLA_EMAIL = "bella@danielhunsicker.com";
 
 function buildEmailLink(role) {
   const org = role.orgName || role.org || "";
   const postingUrl = role.directUrl || role.linkedInUrl || role.idealistUrl || "";
-  const subject = encodeURIComponent(`Job Opportunity — ${role.title} at ${org}`);
+  const subject = encodeURIComponent(`Hey — check this out 👀 ${role.title} at ${org}`);
   const body = encodeURIComponent(
-`Hi Bella,
+`Hey Bells,
 
-I came across this role and thought it was worth a look.
+Found this one and immediately thought of you. Take a look when you get a chance.
 
-Role: ${role.title}
-Organisation: ${org}
-Location: ${role.location || ""}${role.type ? ` · ${role.type}` : ""}
-Relevance: ${role.relevance || ""}${role.deadline ? `\nDeadline: ${role.deadline}` : ""}
+📋 ${role.title}
+🏢 ${org}
+📍 ${role.location || ""}${role.type ? ` · ${role.type}` : ""}${role.deadline ? `\n⏱ Deadline: ${role.deadline}` : ""}
 
-${postingUrl ? `Posting: ${postingUrl}` : "No direct link available — search the org's careers page."}
+${postingUrl ? `🔗 ${postingUrl}` : "No direct link — check their careers page directly."}
 
-${role.whyFit ? `Why this fits you:\n${role.whyFit}` : ""}
+${role.whyFit ? `Why I think it's a fit:\n${role.whyFit}` : ""}
 
-Let me know if you'd like to discuss.
+No pressure — just keeping an eye out for you. Let me know what you think!
 
-Chris`
+Love,
+Dad`
   );
   return `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(BELLA_EMAIL)}&su=${subject}&body=${body}`;
 }
