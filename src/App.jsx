@@ -504,21 +504,21 @@ const BELLA_EMAIL = "bella@danielhunsicker.com";
 function buildEmailLink(role) {
   const org = role.orgName || role.org || "";
   const postingUrl = role.directUrl || role.linkedInUrl || role.idealistUrl || "";
-  const subject = encodeURIComponent(`Hey — check this out 👀 ${role.title} at ${org}`);
+  const subject = encodeURIComponent(`Check this out — ${role.title} at ${org}`);
   const body = encodeURIComponent(
-`Hey Bells,
+`Hi Bella,
 
-Found this one and immediately thought of you. Take a look when you get a chance.
+Came across this one and thought of you. Worth a look.
 
-📋 ${role.title}
-🏢 ${org}
-📍 ${role.location || ""}${role.type ? ` · ${role.type}` : ""}${role.deadline ? `\n⏱ Deadline: ${role.deadline}` : ""}
+${role.title}
+${org}
+${role.location || ""}${role.type ? ` · ${role.type}` : ""}${role.deadline ? `\nDeadline: ${role.deadline}` : ""}
 
-${postingUrl ? `🔗 ${postingUrl}` : "No direct link — check their careers page directly."}
+${postingUrl ? `Link: ${postingUrl}` : "No direct link — check their careers page."}
 
-${role.whyFit ? `Why I think it's a fit:\n${role.whyFit}` : ""}
+${role.whyFit ? `Why I think it fits:\n${role.whyFit}` : ""}
 
-No pressure — just keeping an eye out for you. Let me know what you think!
+No pressure. Let me know what you think.
 
 Love,
 Dad`
