@@ -523,7 +523,7 @@ Let me know if you'd like to discuss.
 
 Chris`
   );
-  return `mailto:${BELLA_EMAIL}?subject=${subject}&body=${body}`;
+  return `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(BELLA_EMAIL)}&su=${subject}&body=${body}`;
 }
 
 function SavedRoleRow({ role, onRemove }) {
@@ -568,7 +568,7 @@ function SavedRoleRow({ role, onRemove }) {
           </div>
         )}
         <button
-          onClick={() => { window.location.href = emailLink; }}
+          onClick={() => { window.open(emailLink, "_blank"); }}
           style={{
             flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
             padding: "9px 12px", fontSize: 12, fontWeight: 700, color: "#1B2A4A",
