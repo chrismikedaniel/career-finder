@@ -60,17 +60,35 @@ async function callClaudeJSON(prompt) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
-      max_tokens: 1000,
+      max_tokens: 2000,
       system: CANDIDATE_CONTEXT,
       tools: [{ type: "web_search_20250305", name: "web_search" }],
-      messages: [{ role: "user", content: prompt + "\n\nRespond with ONLY valid JSON. Start with { end with }. No markdown." }]
+      messages: [{ role: "user", content: prompt + "\n\nRespond with ONLY valid JSON. Start with { end with }. No markdown fences." }]
     })
   });
   const data = await res.json();
-  const text = (data.content || []).filter(b => b.type === "text").map(b => b.text).join("\n");
-  const start = text.indexOf("{"), end = text.lastIndexOf("}");
-  if (start === -1 || end === -1) return null;
-  try { return JSON.parse(text.slice(start, end + 1)); } catch(_) { return null; }
+  if (data.error) {
+    console.error("Anthropic error:", data.error);
+    return null;
+  }
+  // Extract all text blocks including after tool use
+  const blocks = data.content || [];
+  const text = blocks.filter(b => b.type === "text").map(b => b.text).join("\n");
+  if (!text) return null;
+  // Find outermost JSON object
+  const start = text.indexOf("{");
+  const end = text.lastIndexOf("}");
+  if (start === -1 || end === -1 || end <= start) return null;
+  try {
+    return JSON.parse(text.slice(start, end + 1));
+  } catch(_) {
+    // Try stripping any markdown fences and retry
+    try {
+      const cleaned = text.replace(/```json|```/g, "").trim();
+      const s2 = cleaned.indexOf("{"), e2 = cleaned.lastIndexOf("}");
+      return JSON.parse(cleaned.slice(s2, e2 + 1));
+    } catch(_) { return null; }
+  }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -185,12 +203,25 @@ Return JSON:
 }`;
     try {
       const data = await callClaudeJSON(prompt);
-      if (data) {
-        const updated = { ...results, [org.id]: { ...data, _ts: Date.now() } };
-        setResults(updated);
-        await save("bella-org-scans-v4", updated);
-      }
-    } catch(e) { console.error(e); }
+      // Always save — even empty result — so timestamp persists
+      const result = data || {
+        orgId,
+        scannedAt,
+        hiringStatus: "No current openings",
+        openRoles: [],
+        hiringCycleNote: "No current openings found via live search. Check the careers page directly."
+      };
+      const updated = { ...results, [org.id]: { ...result, _ts: Date.now() } };
+      setResults(updated);
+      await save("bella-org-scans-v4", updated);
+    } catch(e) {
+      console.error(e);
+      // Save a fallback so the row doesn't reset
+      const fallback = { orgId, scannedAt, hiringStatus: "Error", openRoles: [], hiringCycleNote: "Scan error — try again.", _ts: Date.now() };
+      const updated = { ...results, [org.id]: fallback };
+      setResults(updated);
+      await save("bella-org-scans-v4", updated);
+    }
     setScanning(p => ({ ...p, [org.id]: false }));
   };
 
@@ -349,12 +380,22 @@ Return JSON:
 }`;
     try {
       const data = await callClaudeJSON(prompt);
-      if (data) {
-        const updated = { ...results, [search.id]: { ...data, _ts: Date.now() } };
-        setResults(updated);
-        await save("bella-broader-v4", updated);
-      }
-    } catch(e) { console.error(e); }
+      const result = data || {
+        searchId,
+        runAt,
+        marketNote: "No roles found via live search. Try the direct job board links above.",
+        topRoles: []
+      };
+      const updated = { ...results, [search.id]: { ...result, _ts: Date.now() } };
+      setResults(updated);
+      await save("bella-broader-v4", updated);
+    } catch(e) {
+      console.error(e);
+      const fallback = { searchId, runAt, marketNote: "Search error — try again.", topRoles: [], _ts: Date.now() };
+      const updated = { ...results, [search.id]: fallback };
+      setResults(updated);
+      await save("bella-broader-v4", updated);
+    }
     setRunning(p => ({ ...p, [search.id]: false }));
   };
 
@@ -526,13 +567,16 @@ function SavedRoleRow({ role, onRemove }) {
             No link available
           </div>
         )}
-        <a href={emailLink} style={{
-          flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-          padding: "9px 12px", fontSize: 12, fontWeight: 700, color: "#1B2A4A",
-          background: "#FFF", textDecoration: "none"
-        }}>
+        <button
+          onClick={() => { window.location.href = emailLink; }}
+          style={{
+            flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
+            padding: "9px 12px", fontSize: 12, fontWeight: 700, color: "#1B2A4A",
+            background: "#FFF", border: "none", cursor: "pointer", fontFamily: "inherit"
+          }}
+        >
           <span>✉️</span> Email to Bella
-        </a>
+        </button>
       </div>
     </div>
   );
