@@ -353,11 +353,6 @@ function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptive
   const [cityFilter, setCityFilter] = useState("All");
   const [scanningAll, setScanningAll] = useState(false);
 
-  // Debug: log learnedOrgs on every render
-  React.useEffect(() => {
-    console.log("[OrgScan] learnedOrgs received:", learnedOrgs);
-  }, [learnedOrgs]);
-
   // Merge named orgs with learned orgs (deduped by name)
   const namedNames = new Set(TARGET_ORGS.map(o => o.name.toLowerCase()));
   const learnedOrgRows = (learnedOrgs || [])
@@ -856,7 +851,7 @@ function SavedPanel({ savedRoles, setSavedRoles }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v16", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v17", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -1388,7 +1383,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v16 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v17 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
