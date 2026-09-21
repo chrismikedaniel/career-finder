@@ -83,6 +83,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 | v5 | Sep 2026 | Supabase backend replacing localStorage — cross-device persistence for saved roles and scan results |
 | v6 | Sep 2026 | Feedback loop (signals → adaptive scan prompts), Add Posting panel (URL decomposition), Insights tab (city/category/relevance analytics), learned orgs tracking, GitHub README |
 | v10 | Sep 2026 | Version alignment (zip = app = footer), learned orgs surface as scannable targets in Org Scan with Learned badge, University of Chicago and user-submitted orgs now appear as scan rows, broader search adapts from signal frequency |
+| v15 | Sep 2026 | Fix: RLS policies on feedback_signals and learned_orgs blocking anon writes (401); fireSignal errors now visible in console; deprecated apple-mobile-web-app-capable meta tag replaced |
 | v14 | Sep 2026 | Fix: pasted role id was being generated as a literal string inside the Claude prompt instead of client-side — all user_submitted roles were colliding on id "user-${Date.now()}"; id now computed before the prompt; upsertRole now throws on DB error rather than swallowing silently; handleSave surfaces save failures visibly |
 | v13 | Sep 2026 | Fix: pasted postings now immediately appear in Saved Roles and Org Scan — learned_orgs deduped by org name (not role ID), learnedOrgs state reloads live after every star or paste save, setLearnedOrgs wired to all three panels |
 | v12 | Sep 2026 | Compass logo mark (Option A) — browser favicon, Apple touch icon, and app header mark |
