@@ -125,8 +125,9 @@ async function fireSignal(role, orgName, source) {
     // If org came from broader search (not in TARGET_ORGS), promote it
     const isKnown = TARGET_ORGS.some(o => o.name === orgName || o.fullName === orgName);
     if (!isKnown && orgName) {
+      const orgKey = "org-" + orgName.toLowerCase().replace(/[^a-z0-9]/g, "-");
       await supabase.from("learned_orgs").upsert({
-        id: `learned-${role.id}`,
+        id: orgKey,
         name: orgName,
         city,
         category,
@@ -346,7 +347,7 @@ function useGlobalStats(orgResults, broaderResults, savedRoles, learnedOrgs) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ORG SCAN PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, learnedOrgs, orgPerf }) {
+function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, learnedOrgs, setLearnedOrgs, orgPerf }) {
   const [scanning, setScanning] = useState({});
   const [cityFilter, setCityFilter] = useState("All");
   const [scanningAll, setScanningAll] = useState(false);
@@ -385,11 +386,12 @@ function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptive
     if (shouldSave) {
       await upsertRole(role, orgName);
       setSavedRoles(prev => ({ ...prev, [roleId]: { ...role, orgName, savedAt: new Date().toISOString() } }));
+      loadLearnedOrgs().then(orgs => setLearnedOrgs(orgs));
     } else {
       await removeRole(roleId);
       setSavedRoles(prev => { const { [roleId]: _, ...rest } = prev; return rest; });
     }
-  }, [setSavedRoles]);
+  }, [setSavedRoles, setLearnedOrgs]);
 
   const scanOrg = async (org) => {
     setScanning(p => ({ ...p, [org.id]: true }));
@@ -561,7 +563,7 @@ Return JSON:
 // ─────────────────────────────────────────────────────────────────────────────
 // BROADER SEARCH PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, broaderPerf }) {
+function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, broaderPerf, setLearnedOrgs }) {
   const [running, setRunning] = useState({});
   const [cityFilter, setCityFilter] = useState("All");
   const [runningAll, setRunningAll] = useState(false);
@@ -581,11 +583,12 @@ function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, ad
     if (shouldSave) {
       await upsertRole(role, orgName);
       setSavedRoles(prev => ({ ...prev, [roleId]: { ...role, orgName, savedAt: new Date().toISOString() } }));
+      loadLearnedOrgs().then(orgs => setLearnedOrgs(orgs));
     } else {
       await removeRole(roleId);
       setSavedRoles(prev => { const { [roleId]: _, ...rest } = prev; return rest; });
     }
-  }, [setSavedRoles]);
+  }, [setSavedRoles, setLearnedOrgs]);
 
   const runSearch = async (search) => {
     setRunning(p => ({ ...p, [search.id]: true }));
@@ -847,7 +850,7 @@ function SavedPanel({ savedRoles, setSavedRoles }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v11", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v13", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -905,7 +908,7 @@ function SavedPanel({ savedRoles, setSavedRoles }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ADD POSTING PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function AddPostingPanel({ savedRoles, setSavedRoles, setSignals }) {
+function AddPostingPanel({ savedRoles, setSavedRoles, setSignals, setLearnedOrgs }) {
   const [url, setUrl] = useState("");
   const [status, setStatus] = useState("idle"); // idle | loading | success | error
   const [result, setResult] = useState(null);
@@ -956,8 +959,12 @@ Return JSON:
     if (!result) return;
     await upsertRole(result, result.org, "user_submitted");
     setSavedRoles(prev => ({ ...prev, [result.id]: { ...result, orgName: result.org, savedAt: new Date().toISOString() } }));
-    const updated = await loadFeedbackSignals();
-    setSignals(updated);
+    const [updatedSignals, updatedOrgs] = await Promise.all([
+      loadFeedbackSignals(),
+      loadLearnedOrgs()
+    ]);
+    setSignals(updatedSignals);
+    setLearnedOrgs(updatedOrgs);
     setUrl("");
     setResult(null);
     setStatus("idle");
@@ -1288,7 +1295,10 @@ export default function App() {
           {/* App name + tagline */}
           <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, marginBottom: 14 }}>
             <div>
-              <h1 style={{ fontSize: 20, fontWeight: 800, color: "#FFF", marginBottom: 3, letterSpacing: "-0.01em" }}>Job Posting Discovery Agent</h1>
+              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+CiAgPCEtLSBOYXZ5IGNpcmNsZSAtLT4KICA8Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSIzMCIgZmlsbD0iIzFCMkE0QSIvPgogIDwhLS0gVGVhbCBkYXNoZWQgcmluZyAtLT4KICA8Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSIyNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNERBREEzIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1kYXNoYXJyYXk9IjUgMyIvPgogIDwhLS0gTm9ydGggc3Bpa2UgKHRlYWwsIHRhbGwpIC0tPgogIDxwb2x5Z29uIHBvaW50cz0iMzIsOCAzNiwyNiAzMiwyMiAyOCwyNiIgZmlsbD0iIzREQURBMyIvPgogIDwhLS0gU291dGggbnViIChtdXRlZCkgLS0+CiAgPHBvbHlnb24gcG9pbnRzPSIzMiw1NiAzNSw0MCAzMiw0NCAyOSw0MCIgZmlsbD0iIzVBN0ZBQSIvPgogIDwhLS0gRWFzdCBudWIgLS0+CiAgPHBvbHlnb24gcG9pbnRzPSI1NiwzMiA0MCwyOSA0NCwzMiA0MCwzNSIgZmlsbD0iIzVBN0ZBQSIvPgogIDwhLS0gV2VzdCBudWIgLS0+CiAgPHBvbHlnb24gcG9pbnRzPSI4LDMyIDI0LDM1IDIwLDMyIDI0LDI5IiBmaWxsPSIjNUE3RkFBIi8+CiAgPCEtLSBHb2xkIGNlbnRlciBkb3QgLS0+CiAgPGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iNCIgZmlsbD0iI0Y1Qzg0MiIvPgo8L3N2Zz4K" alt="Career Discovery System logo" style={{ width: 36, height: 36, flexShrink: 0 }}/>
+                <h1 style={{ fontSize: 20, fontWeight: 800, color: "#FFF", marginBottom: 3, letterSpacing: "-0.01em" }}>Job Posting Discovery Agent</h1>
+              </div>
               <p style={{ fontSize: 11, color: "#5A7FAA" }}>Bella Daniel-Hunsicker · LGBTQ+ · Immigrant Rights · Reproductive Rights · Digital Rights</p>
             </div>
 
@@ -1333,7 +1343,7 @@ export default function App() {
             results={orgResults} setResults={setOrgResults}
             savedRoles={savedRoles} setSavedRoles={setSavedRoles}
             adaptiveContext={fullAdaptiveContext}
-            learnedOrgs={learnedOrgs}
+            learnedOrgs={learnedOrgs} setLearnedOrgs={setLearnedOrgs}
             orgPerf={orgPerf}
           />
         )}
@@ -1342,7 +1352,7 @@ export default function App() {
             results={broaderResults} setResults={setBroaderResults}
             savedRoles={savedRoles} setSavedRoles={setSavedRoles}
             adaptiveContext={fullAdaptiveContext}
-            broaderPerf={broaderPerf}
+            broaderPerf={broaderPerf} setLearnedOrgs={setLearnedOrgs}
           />
         )}
         {tab === "saved" && (
@@ -1351,7 +1361,7 @@ export default function App() {
         {tab === "add" && (
           <AddPostingPanel
             savedRoles={savedRoles} setSavedRoles={setSavedRoles}
-            setSignals={setSignals}
+            setSignals={setSignals} setLearnedOrgs={setLearnedOrgs}
           />
         )}
         {tab === "insights" && (
@@ -1366,7 +1376,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v11 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v13 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
