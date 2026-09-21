@@ -127,16 +127,43 @@ async function fireSignal(role, orgName, source) {
   const isKnown = TARGET_ORGS.some(o => o.name === orgName || o.fullName === orgName);
   if (!isKnown && orgName) {
     const orgKey = "org-" + orgName.toLowerCase().replace(/[^a-z0-9]/g, "-");
+    // If the role came from a user-pasted URL, extract the base careers site domain
+    let careersUrl = null;
+    if (role.directUrl) {
+      try {
+        const u = new URL(role.directUrl);
+        careersUrl = u.origin + u.pathname.split("/").slice(0, 3).join("/");
+      } catch(e) {}
+    }
     const { error: orgError } = await supabase.from("learned_orgs").upsert({
       id: orgKey,
       name: orgName,
       city,
       category,
       source_role_id: role.id,
+      careers_url: careersUrl,
       created_at: new Date().toISOString()
     });
     if (orgError) console.error("fireSignal [learned_orgs]:", orgError);
   }
+}
+
+async function submitThumb(roleId, orgName, thumb, notes) {
+  try {
+    const { error } = await supabase.from("feedback_signals").upsert({
+      id: "thumb-" + roleId,
+      role_id: roleId,
+      org: orgName,
+      category: null,
+      city: null,
+      relevance: thumb === "up" ? "High" : "Low",
+      source: "thumb_" + thumb,
+      thumb,
+      notes: notes || null,
+      created_at: new Date().toISOString()
+    });
+    if (error) console.error("submitThumb:", error);
+  } catch(e) { console.error("submitThumb:", e); }
 }
 
 function extractCity(location) {
@@ -181,13 +208,26 @@ function buildAdaptiveContext(signals) {
   if (!signals.length) return "";
   const cityCount = {};
   const catCount = {};
+  const thumbUpOrgs = [];
+  const thumbDownOrgs = [];
+  const thumbNotes = [];
+
   signals.forEach(s => {
-    cityCount[s.city] = (cityCount[s.city] || 0) + 1;
-    catCount[s.category] = (catCount[s.category] || 0) + 1;
+    if (s.city) cityCount[s.city] = (cityCount[s.city] || 0) + 1;
+    if (s.category) catCount[s.category] = (catCount[s.category] || 0) + 1;
+    if (s.thumb === "up" && s.org) thumbUpOrgs.push(s.org);
+    if (s.thumb === "down" && s.org) thumbDownOrgs.push(s.org);
+    if (s.notes) thumbNotes.push(s.notes);
   });
+
   const topCities = Object.entries(cityCount).sort((a,b) => b[1]-a[1]).slice(0,3).map(([c]) => c);
   const topCats = Object.entries(catCount).sort((a,b) => b[1]-a[1]).slice(0,3).map(([c]) => c);
-  return `\n\nLEARNED PREFERENCES (from ${signals.length} saved roles): Top cities: ${topCities.join(", ")}. Top categories: ${topCats.join(", ")}. Weight these higher in relevance scoring.`;
+
+  let ctx = `\n\nLEARNED PREFERENCES (from ${signals.length} signals): Top cities: ${topCities.join(", ")}. Top categories: ${topCats.join(", ")}. Weight these higher in relevance scoring.`;
+  if (thumbUpOrgs.length) ctx += ` Explicitly endorsed orgs: ${[...new Set(thumbUpOrgs)].join(", ")} — surface similar roles.`;
+  if (thumbDownOrgs.length) ctx += ` Explicitly rejected orgs: ${[...new Set(thumbDownOrgs)].join(", ")} — deprioritize similar roles.`;
+  if (thumbNotes.length) ctx += ` User notes on fit: "${thumbNotes.slice(-3).join('" · "')}" — use these to calibrate relevance.`;
+  return ctx;
 }
 
 // ─── ORG / SEARCH PERFORMANCE SCORING ─ prioritization + deprioritization ───
@@ -303,23 +343,80 @@ function RelBadge({ rel }) {
 }
 
 // Compact role row — clickable title links to posting, star to save
+function ThumbBar({ roleId, orgName }) {
+  const [thumb, setThumb] = useState(null); // null | "up" | "down"
+  const [notes, setNotes] = useState("");
+  const [submitted, setSubmitted] = useState(false);
+
+  const handleThumb = (val) => {
+    setThumb(prev => prev === val ? null : val);
+    setSubmitted(false);
+  };
+
+  const handleSubmit = async () => {
+    await submitThumb(roleId, orgName, thumb, notes);
+    setSubmitted(true);
+    setTimeout(() => setSubmitted(false), 2000);
+  };
+
+  return (
+    <div style={{ marginTop: 4 }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+        <button onClick={() => handleThumb("up")} title="Good fit" style={{
+          background: thumb === "up" ? "#EAF4EE" : "none", border: "none", cursor: "pointer",
+          fontSize: 14, padding: "2px 5px", borderRadius: 4, lineHeight: 1,
+          color: thumb === "up" ? "#1E6B3C" : "#BBB", transition: "all 0.15s"
+        }}>👍</button>
+        <button onClick={() => handleThumb("down")} title="Not a fit" style={{
+          background: thumb === "down" ? "#FDF0F0" : "none", border: "none", cursor: "pointer",
+          fontSize: 14, padding: "2px 5px", borderRadius: 4, lineHeight: 1,
+          color: thumb === "down" ? "#A63228" : "#BBB", transition: "all 0.15s"
+        }}>👎</button>
+        {thumb && !submitted && (
+          <>
+            <input
+              value={notes}
+              onChange={e => setNotes(e.target.value)}
+              placeholder="Optional note…"
+              onKeyDown={e => e.key === "Enter" && handleSubmit()}
+              style={{
+                flex: 1, fontSize: 11, padding: "3px 7px", borderRadius: 4,
+                border: "1px solid #DDD", fontFamily: "inherit", outline: "none",
+                color: "#333", background: "#FAFAFA"
+              }}
+            />
+            <button onClick={handleSubmit} style={{
+              fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 4,
+              border: "none", background: "#1B2A4A", color: "#FFF", cursor: "pointer", fontFamily: "inherit"
+            }}>Send</button>
+          </>
+        )}
+        {submitted && <span style={{ fontSize: 10, color: "#1E6B3C", fontWeight: 700 }}>✓ Logged</span>}
+      </div>
+    </div>
+  );
+}
+
 function RoleRow({ role, orgName, isSaved, onToggleSave }) {
   const postingUrl = role.directUrl || role.linkedInUrl || role.idealistUrl || null;
   return (
-    <div style={{ display: "flex", alignItems: "center", gap: 10, padding: "8px 0", borderBottom: "1px solid #F4F4F4" }}>
-      <div style={{ flex: 1, minWidth: 0 }}>
-        {postingUrl ? (
-          <a href={postingUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, fontWeight: 700, color: "#1D6A72", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block", textDecoration: "none" }}>
-            {role.title} <span style={{ fontSize: 10, opacity: 0.6 }}>↗</span>
-          </a>
-        ) : (
-          <div style={{ fontSize: 13, fontWeight: 700, color: "#1B2A4A", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{role.title}</div>
-        )}
-        <div style={{ fontSize: 11, color: "#888" }}>{orgName || role.org}{role.location ? ` · ${role.location}` : ""}{role.type ? ` · ${role.type}` : ""}</div>
-        {role.deadline && <div style={{ fontSize: 10, color: "#A63228", fontWeight: 700, marginTop: 1 }}>⏱ {role.deadline}</div>}
+    <div style={{ padding: "8px 0", borderBottom: "1px solid #F4F4F4" }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+        <div style={{ flex: 1, minWidth: 0 }}>
+          {postingUrl ? (
+            <a href={postingUrl} target="_blank" rel="noopener noreferrer" style={{ fontSize: 13, fontWeight: 700, color: "#1D6A72", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis", display: "block", textDecoration: "none" }}>
+              {role.title} <span style={{ fontSize: 10, opacity: 0.6 }}>↗</span>
+            </a>
+          ) : (
+            <div style={{ fontSize: 13, fontWeight: 700, color: "#1B2A4A", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{role.title}</div>
+          )}
+          <div style={{ fontSize: 11, color: "#888" }}>{orgName || role.org}{role.location ? ` · ${role.location}` : ""}{role.type ? ` · ${role.type}` : ""}</div>
+          {role.deadline && <div style={{ fontSize: 10, color: "#A63228", fontWeight: 700, marginTop: 1 }}>⏱ {role.deadline}</div>}
+        </div>
+        <RelBadge rel={role.relevance} />
+        <button onClick={onToggleSave} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18, color: isSaved ? "#F5C842" : "#CCC", transition: "color 0.15s", flexShrink: 0, lineHeight: 1 }}>{isSaved ? "★" : "☆"}</button>
       </div>
-      <RelBadge rel={role.relevance} />
-      <button onClick={onToggleSave} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18, color: isSaved ? "#F5C842" : "#CCC", transition: "color 0.15s", flexShrink: 0, lineHeight: 1 }}>{isSaved ? "★" : "☆"}</button>
+      <ThumbBar roleId={role.id} orgName={orgName || role.org} />
     </div>
   );
 }
@@ -364,8 +461,10 @@ function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptive
       city: lo.city || "Unknown",
       category: lo.category || "Advocacy",
       urgency: "Check now",
-      careersUrl: `https://www.google.com/search?q=${encodeURIComponent(lo.name + " careers jobs")}`,
-      searchHint: `Discovered via saved roles — ${lo.category || "advocacy"} focus`,
+      careersUrl: lo.careers_url || `https://www.google.com/search?q=${encodeURIComponent(lo.name + " careers jobs")}`,
+      searchHint: lo.careers_url
+        ? `Discovered via saved roles — scans ${lo.careers_url}`
+        : `Discovered via saved roles — ${lo.category || "advocacy"} focus`,
       isLearned: true
     }));
 
@@ -376,12 +475,17 @@ function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptive
     cityFilter === "All" || o.city === cityFilter || o.city.startsWith(cityFilter)
   );
 
-  // Sort: hot (high yield) first, cold (low yield) last, neutral/unscanned in between
-  const filtered = [...filteredUnsorted].sort((a, b) => {
-    const scoreA = orgPerf?.[a.id]?.score ?? 0;
-    const scoreB = orgPerf?.[b.id]?.score ?? 0;
-    return scoreB - scoreA;
-  });
+  // Sort order: High Yield → Learned (unscanned) → Neutral → Low Yield
+  // Rank: hot=3, learned-unscanned=2, neutral=1, cold=0
+  const sortRank = (org) => {
+    const perf = orgPerf?.[org.id];
+    const score = perf?.score ?? null;
+    if (score !== null && perfBucket(score) === "hot") return 3;
+    if (org.isLearned && (score === null || perf?.scans === 0)) return 2;
+    if (score === null || perfBucket(score) === "neutral") return 1;
+    return 0; // cold
+  };
+  const filtered = [...filteredUnsorted].sort((a, b) => sortRank(b) - sortRank(a));
 
   const handleSave = useCallback(async (roleId, role, orgName, shouldSave) => {
     if (shouldSave) {
@@ -400,7 +504,15 @@ function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptive
     const scannedAt = new Date().toISOString();
     const liUrl = "https://www.linkedin.com/jobs/search/?keywords=" + encodeURIComponent(org.fullName) + "&location=" + encodeURIComponent(org.city);
     const idUrl = "https://www.idealist.org/en/jobs?q=" + encodeURIComponent(org.name) + "&location=" + encodeURIComponent(org.city);
-    const prompt = `Search the web NOW for CURRENT job openings at ${org.fullName} in ${org.city}. Search: "${org.fullName} jobs 2026" and "${org.fullName} careers openings". Only report roles actually found — do not invent openings.
+    const careersHint = org.careersUrl && !org.careersUrl.includes("google.com/search")
+      ? `Start by checking their known careers page: ${org.careersUrl}. `
+      : "";
+    const prompt = `Search the web NOW for CURRENT job openings at ${org.fullName} in ${org.city}. ${careersHint}Also search: "${org.fullName} jobs 2026" and "${org.fullName} careers openings". Only report roles actually found with real application URLs — do not invent openings.
+
+IMPORTANT URL RULES:
+- directUrl must be a link to the SPECIFIC JOB POSTING (e.g. a Workday, Greenhouse, Lever, or org careers page URL), never a LinkedIn company profile URL
+- linkedInUrl must be a LinkedIn JOBS search URL (like ${liUrl}), never a company profile page
+- If you cannot find a direct posting URL, leave directUrl as null
 
 Return JSON:
 {
@@ -419,7 +531,7 @@ Return JSON:
       "whyFit": "1 sentence specific to Bella",
       "linkedInUrl": "${liUrl}",
       "idealistUrl": "${idUrl}",
-      "directUrl": "direct URL if found or null"
+      "directUrl": "specific job posting URL or null"
     }
   ],
   "hiringCycleNote": "One sentence on hiring cycle or upcoming openings"
@@ -803,6 +915,7 @@ function SavedRoleRow({ role, onRemove }) {
         {role.whyFit && (
           <div style={{ fontSize: 11, color: "#666", marginTop: 6, lineHeight: 1.5, fontStyle: "italic" }}>{role.whyFit}</div>
         )}
+        <ThumbBar roleId={role.id} orgName={role.orgName || role.org} />
       </div>
 
       {/* Action buttons */}
@@ -851,7 +964,7 @@ function SavedPanel({ savedRoles, setSavedRoles }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v17", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v20", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -1037,6 +1150,7 @@ Return JSON:
                 {result.howToApply}
               </div>
             )}
+            <ThumbBar roleId={result.id} orgName={result.org} />
             <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
               <button onClick={handleSave} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none", background: "#1E6B3C", color: "#FFF", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
                 ★ Save to Roles
@@ -1383,7 +1497,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v17 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v20 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
