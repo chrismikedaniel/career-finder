@@ -69,20 +69,19 @@ async function loadScanResults(scanType) {
 }
 
 async function upsertRole(role, orgName, source = "starred") {
-  try {
-    await supabase.from("saved_roles").upsert({
-      id: role.id, title: role.title,
-      org: role.org || orgName, org_name: orgName,
-      location: role.location || null, type: role.type || null,
-      relevance: role.relevance || null, deadline: role.deadline || null,
-      why_fit: role.whyFit || null, direct_url: role.directUrl || null,
-      linkedin_url: role.linkedInUrl || null, idealist_url: role.idealistUrl || null,
-      source: source,
-      saved_at: new Date().toISOString()
-    });
-    // Fire feedback signal in background
-    fireSignal(role, orgName, source);
-  } catch(e) { console.error("upsertRole:", e); }
+  const { error } = await supabase.from("saved_roles").upsert({
+    id: role.id, title: role.title,
+    org: role.org || orgName, org_name: orgName,
+    location: role.location || null, type: role.type || null,
+    relevance: role.relevance || null, deadline: role.deadline || null,
+    why_fit: role.whyFit || null, direct_url: role.directUrl || null,
+    linkedin_url: role.linkedInUrl || null, idealist_url: role.idealistUrl || null,
+    source: source,
+    saved_at: new Date().toISOString()
+  });
+  if (error) { console.error("upsertRole error:", error); throw error; }
+  // Fire feedback signal in background (non-blocking)
+  fireSignal(role, orgName, source).catch(e => console.error("fireSignal:", e));
 }
 
 async function removeRole(id) {
@@ -850,7 +849,7 @@ function SavedPanel({ savedRoles, setSavedRoles }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v13", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v14", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -919,6 +918,7 @@ function AddPostingPanel({ savedRoles, setSavedRoles, setSignals, setLearnedOrgs
     setStatus("loading");
     setResult(null);
     setErrorMsg("");
+    const roleId = "user-" + Date.now();
     try {
       const prompt = `Search the web and fetch this job posting URL: ${url.trim()}
 
@@ -926,7 +926,7 @@ Decompose it into structured role data for Bella Daniel-Hunsicker's job search.
 
 Return JSON:
 {
-  "id": "user-${Date.now()}",
+  "id": "${roleId}",
   "title": "Exact job title",
   "org": "Organisation name",
   "location": "City or Remote",
@@ -957,17 +957,22 @@ Return JSON:
 
   const handleSave = async () => {
     if (!result) return;
-    await upsertRole(result, result.org, "user_submitted");
-    setSavedRoles(prev => ({ ...prev, [result.id]: { ...result, orgName: result.org, savedAt: new Date().toISOString() } }));
-    const [updatedSignals, updatedOrgs] = await Promise.all([
-      loadFeedbackSignals(),
-      loadLearnedOrgs()
-    ]);
-    setSignals(updatedSignals);
-    setLearnedOrgs(updatedOrgs);
-    setUrl("");
-    setResult(null);
-    setStatus("idle");
+    try {
+      await upsertRole(result, result.org, "user_submitted");
+      setSavedRoles(prev => ({ ...prev, [result.id]: { ...result, orgName: result.org, savedAt: new Date().toISOString() } }));
+      const [updatedSignals, updatedOrgs] = await Promise.all([
+        loadFeedbackSignals(),
+        loadLearnedOrgs()
+      ]);
+      setSignals(updatedSignals);
+      setLearnedOrgs(updatedOrgs);
+      setUrl("");
+      setResult(null);
+      setStatus("idle");
+    } catch(e) {
+      setStatus("error");
+      setErrorMsg("Save failed: " + (e?.message || "database error. Check console for details."));
+    }
   };
 
   return (
@@ -1376,7 +1381,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v13 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v14 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
