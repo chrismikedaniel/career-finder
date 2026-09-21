@@ -68,7 +68,7 @@ async function loadScanResults(scanType) {
   } catch(e) { console.error("loadScanResults:", e); return {}; }
 }
 
-async function upsertRole(role, orgName) {
+async function upsertRole(role, orgName, source = "starred") {
   try {
     await supabase.from("saved_roles").upsert({
       id: role.id, title: role.title,
@@ -77,8 +77,11 @@ async function upsertRole(role, orgName) {
       relevance: role.relevance || null, deadline: role.deadline || null,
       why_fit: role.whyFit || null, direct_url: role.directUrl || null,
       linkedin_url: role.linkedInUrl || null, idealist_url: role.idealistUrl || null,
+      source: source,
       saved_at: new Date().toISOString()
     });
+    // Fire feedback signal in background
+    fireSignal(role, orgName, source);
   } catch(e) { console.error("upsertRole:", e); }
 }
 
@@ -95,22 +98,107 @@ async function loadSavedRoles() {
       id: row.id, title: row.title, org: row.org, orgName: row.org_name,
       location: row.location, type: row.type, relevance: row.relevance,
       deadline: row.deadline, whyFit: row.why_fit, directUrl: row.direct_url,
-      linkedInUrl: row.linkedin_url, idealistUrl: row.idealist_url, savedAt: row.saved_at
+      linkedInUrl: row.linkedin_url, idealistUrl: row.idealist_url,
+      source: row.source || "starred", savedAt: row.saved_at
     }]));
   } catch(e) { console.error("loadSavedRoles:", e); return {}; }
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// FEEDBACK LOOP — runs silently on every star/submit
+// ─────────────────────────────────────────────────────────────────────────────
+
+async function fireSignal(role, orgName, source) {
+  try {
+    const city = extractCity(role.location || "");
+    const category = inferCategory(role.title || "", orgName || "");
+    await supabase.from("feedback_signals").upsert({
+      id: `sig-${role.id}`,
+      role_id: role.id,
+      org: orgName || role.org,
+      category,
+      city,
+      relevance: role.relevance || "Medium",
+      source,
+      created_at: new Date().toISOString()
+    });
+    // If org came from broader search (not in TARGET_ORGS), promote it
+    const isKnown = TARGET_ORGS.some(o => o.name === orgName || o.fullName === orgName);
+    if (!isKnown && orgName) {
+      await supabase.from("learned_orgs").upsert({
+        id: `learned-${role.id}`,
+        name: orgName,
+        city,
+        category,
+        source_role_id: role.id,
+        created_at: new Date().toISOString()
+      });
+    }
+  } catch(e) { console.error("fireSignal:", e); }
+}
+
+function extractCity(location) {
+  if (!location) return "Unknown";
+  if (location.toLowerCase().includes("chicago")) return "Chicago";
+  if (location.toLowerCase().includes("toronto")) return "Toronto";
+  if (location.toLowerCase().includes("new york") || location.toLowerCase().includes("nyc")) return "New York";
+  if (location.toLowerCase().includes("london")) return "London";
+  if (location.toLowerCase().includes("remote")) return "Remote";
+  return location.split(",")[0].trim();
+}
+
+function inferCategory(title, org) {
+  const t = (title + " " + org).toLowerCase();
+  if (t.includes("immigr") || t.includes("migrant") || t.includes("asylum") || t.includes("refugee")) return "Migrant Rights";
+  if (t.includes("lgbtq") || t.includes("queer") || t.includes("sexuality")) return "LGBTQ+";
+  if (t.includes("reproduct") || t.includes("sexual health") || t.includes("abortion")) return "Reproductive Rights";
+  if (t.includes("digital") || t.includes("tech") || t.includes("ai ") || t.includes("policy")) return "Digital Rights / Tech";
+  if (t.includes("communicat") || t.includes("editorial") || t.includes("content") || t.includes("media")) return "Communications";
+  if (t.includes("foundation") || t.includes("philanthrop") || t.includes("program officer")) return "Philanthropy";
+  if (t.includes("education") || t.includes("university") || t.includes("depaul") || t.includes("student")) return "Education";
+  if (t.includes("equity") || t.includes("diversity") || t.includes("inclusion") || t.includes("edi")) return "EDI";
+  return "Advocacy / Policy";
+}
+
+async function loadFeedbackSignals() {
+  try {
+    const { data } = await supabase.from("feedback_signals").select("*").order("created_at", { ascending: false });
+    return data || [];
+  } catch(e) { console.error("loadFeedbackSignals:", e); return []; }
+}
+
+async function loadLearnedOrgs() {
+  try {
+    const { data } = await supabase.from("learned_orgs").select("*").order("created_at", { ascending: false });
+    return data || [];
+  } catch(e) { console.error("loadLearnedOrgs:", e); return []; }
+}
+
+// Build adaptive context string from feedback signals
+function buildAdaptiveContext(signals) {
+  if (!signals.length) return "";
+  const cityCount = {};
+  const catCount = {};
+  signals.forEach(s => {
+    cityCount[s.city] = (cityCount[s.city] || 0) + 1;
+    catCount[s.category] = (catCount[s.category] || 0) + 1;
+  });
+  const topCities = Object.entries(cityCount).sort((a,b) => b[1]-a[1]).slice(0,3).map(([c]) => c);
+  const topCats = Object.entries(catCount).sort((a,b) => b[1]-a[1]).slice(0,3).map(([c]) => c);
+  return `\n\nLEARNED PREFERENCES (from ${signals.length} saved roles): Top cities: ${topCities.join(", ")}. Top categories: ${topCats.join(", ")}. Weight these higher in relevance scoring.`;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // API — real-time web search
 // ─────────────────────────────────────────────────────────────────────────────
-async function callClaudeJSON(prompt) {
+async function callClaudeJSON(prompt, adaptiveContext = "") {
   const res = await fetch("/.netlify/functions/claude", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
       max_tokens: 2000,
-      system: CANDIDATE_CONTEXT,
+      system: CANDIDATE_CONTEXT + adaptiveContext,
       tools: [{ type: "web_search_20250305", name: "web_search" }],
       messages: [{ role: "user", content: prompt + "\n\nRespond with ONLY valid JSON. Start with { end with }. No markdown fences." }]
     })
@@ -200,7 +288,7 @@ function useGlobalStats(orgResults, broaderResults, savedRoles) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ORG SCAN PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles }) {
+function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext }) {
   const [scanning, setScanning] = useState({});
   const [cityFilter, setCityFilter] = useState("All");
   const [scanningAll, setScanningAll] = useState(false);
@@ -252,7 +340,7 @@ Return JSON:
   "hiringCycleNote": "One sentence on hiring cycle or upcoming openings"
 }`;
     try {
-      const data = await callClaudeJSON(prompt);
+      const data = await callClaudeJSON(prompt, adaptiveContext);
       // Always save — even empty result — so timestamp persists
       const result = data || {
         orgId,
@@ -380,7 +468,7 @@ Return JSON:
 // ─────────────────────────────────────────────────────────────────────────────
 // BROADER SEARCH PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles }) {
+function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext }) {
   const [running, setRunning] = useState({});
   const [cityFilter, setCityFilter] = useState("All");
   const [runningAll, setRunningAll] = useState(false);
@@ -430,7 +518,7 @@ Return JSON:
   ]
 }`;
     try {
-      const data = await callClaudeJSON(prompt);
+      const data = await callClaudeJSON(prompt, adaptiveContext);
       const result = data || {
         searchId,
         runAt,
@@ -649,7 +737,7 @@ function SavedPanel({ savedRoles, setSavedRoles }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v5", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v6", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -705,36 +793,338 @@ function SavedPanel({ savedRoles, setSavedRoles }) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// ROOT
+// ADD POSTING PANEL
+// ─────────────────────────────────────────────────────────────────────────────
+function AddPostingPanel({ savedRoles, setSavedRoles, setSignals }) {
+  const [url, setUrl] = useState("");
+  const [status, setStatus] = useState("idle"); // idle | loading | success | error
+  const [result, setResult] = useState(null);
+  const [errorMsg, setErrorMsg] = useState("");
+
+  const handleDecompose = async () => {
+    if (!url.trim()) return;
+    setStatus("loading");
+    setResult(null);
+    setErrorMsg("");
+    try {
+      const prompt = `Search the web and fetch this job posting URL: ${url.trim()}
+
+Decompose it into structured role data for Bella Daniel-Hunsicker's job search.
+
+Return JSON:
+{
+  "id": "user-${Date.now()}",
+  "title": "Exact job title",
+  "org": "Organisation name",
+  "location": "City or Remote",
+  "type": "Full-time or Part-time or Contract or Fellowship",
+  "salary": "Salary range if listed or null",
+  "deadline": "Application deadline if listed or null",
+  "relevance": "High or Medium or Low based on Bella's profile",
+  "whyFit": "1-2 sentences on why this fits Bella specifically — reference her LSE MSc, PEN Canada, DTS BA, Spanish, Chicago/Toronto connections",
+  "howToApply": "Specific application instructions from the posting",
+  "directUrl": "${url.trim()}",
+  "linkedInUrl": null,
+  "idealistUrl": null,
+  "source": "user_submitted"
+}`;
+      const data = await callClaudeJSON(prompt);
+      if (data && data.title) {
+        setResult(data);
+        setStatus("success");
+      } else {
+        setStatus("error");
+        setErrorMsg("Couldn't parse the posting. Try a direct job listing URL.");
+      }
+    } catch(e) {
+      setStatus("error");
+      setErrorMsg("Something went wrong. Check the URL and try again.");
+    }
+  };
+
+  const handleSave = async () => {
+    if (!result) return;
+    await upsertRole(result, result.org, "user_submitted");
+    setSavedRoles(prev => ({ ...prev, [result.id]: { ...result, orgName: result.org, savedAt: new Date().toISOString() } }));
+    const updated = await loadFeedbackSignals();
+    setSignals(updated);
+    setUrl("");
+    setResult(null);
+    setStatus("idle");
+  };
+
+  return (
+    <div>
+      <div style={{ marginBottom: 20 }}>
+        <div style={{ fontSize: 15, fontWeight: 800, color: "#1B2A4A", marginBottom: 4 }}>Add a Job Posting</div>
+        <div style={{ fontSize: 13, color: "#666", lineHeight: 1.6 }}>
+          Found a role outside the app? Paste the posting URL below. The system will decompose it, assess fit for Bella, and add it to saved roles — feeding the learning loop.
+        </div>
+      </div>
+
+      {/* URL input */}
+      <div style={{ display: "flex", gap: 8, marginBottom: 16 }}>
+        <input
+          value={url}
+          onChange={e => setUrl(e.target.value)}
+          onKeyDown={e => e.key === "Enter" && handleDecompose()}
+          placeholder="https://..."
+          style={{ flex: 1, padding: "10px 14px", borderRadius: 8, border: "1.5px solid #DDD", fontSize: 13, color: "#333" }}
+        />
+        <button onClick={handleDecompose} disabled={status === "loading" || !url.trim()} style={{
+          padding: "10px 18px", borderRadius: 8, border: "none",
+          background: status === "loading" ? "#CCC" : "#1B2A4A",
+          color: "#FFF", fontSize: 13, fontWeight: 700, cursor: status === "loading" ? "not-allowed" : "pointer",
+          display: "flex", alignItems: "center", gap: 6, flexShrink: 0
+        }}>
+          {status === "loading" ? <><Spinner size={14} color="#FFF" /><span>Analysing…</span></> : "Analyse Posting"}
+        </button>
+      </div>
+
+      {/* Error */}
+      {status === "error" && (
+        <div style={{ background: "#FDF0F0", border: "1.5px solid #A63228", borderRadius: 8, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#A63228" }}>
+          {errorMsg}
+        </div>
+      )}
+
+      {/* Result preview */}
+      {status === "success" && result && (
+        <div style={{ border: "1.5px solid #1E6B3C", borderRadius: 10, overflow: "hidden" }}>
+          <div style={{ background: "#1B2A4A", padding: "12px 16px" }}>
+            <div style={{ fontSize: 15, fontWeight: 800, color: "#FFF" }}>{result.title}</div>
+            <div style={{ fontSize: 12, color: "#7A9CC4", marginTop: 2 }}>{result.org} · {result.location} · {result.type}</div>
+          </div>
+          <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
+            {result.salary && <div style={{ fontSize: 12, color: "#555" }}>Salary: {result.salary}</div>}
+            {result.deadline && <div style={{ fontSize: 12, color: "#A63228", fontWeight: 700 }}>Deadline: {result.deadline}</div>}
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span style={{ fontSize: 11, fontWeight: 800, color: REL_COLOR[result.relevance] || "#888", background: REL_BG[result.relevance] || "#F0F0F0", padding: "2px 8px", borderRadius: 4 }}>{result.relevance}</span>
+            </div>
+            {result.whyFit && (
+              <div style={{ background: "#EAF4EE", borderLeft: "3px solid #1E6B3C", borderRadius: "0 6px 6px 0", padding: "8px 12px", fontSize: 12, color: "#333", lineHeight: 1.6 }}>
+                <div style={{ fontSize: 10, fontWeight: 800, color: "#1E6B3C", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>Why this fits Bella</div>
+                {result.whyFit}
+              </div>
+            )}
+            {result.howToApply && (
+              <div style={{ background: "#FDF3E3", borderLeft: "3px solid #B8732A", borderRadius: "0 6px 6px 0", padding: "8px 12px", fontSize: 12, color: "#333", lineHeight: 1.6 }}>
+                <div style={{ fontSize: 10, fontWeight: 800, color: "#B8732A", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>How to apply</div>
+                {result.howToApply}
+              </div>
+            )}
+            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+              <button onClick={handleSave} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none", background: "#1E6B3C", color: "#FFF", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                ★ Save to Roles
+              </button>
+              <button onClick={() => { setStatus("idle"); setResult(null); setUrl(""); }} style={{ padding: "10px 16px", borderRadius: 8, border: "1.5px solid #DDD", background: "#FFF", color: "#888", fontSize: 13, cursor: "pointer" }}>
+                Discard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Info */}
+      {status === "idle" && (
+        <div style={{ background: "#F7F7F7", borderRadius: 8, padding: "14px 16px", fontSize: 12, color: "#777", lineHeight: 1.7 }}>
+          <strong style={{ color: "#1B2A4A" }}>How it works:</strong> Paste any job posting URL — Idealist, LinkedIn, an org's own careers page, anywhere. The system fetches the posting, extracts the role details, assesses fit for Bella's specific profile, and adds it to saved roles. It also updates the learning signals so future scans weight similar roles higher.
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// INSIGHTS PANEL
+// ─────────────────────────────────────────────────────────────────────────────
+function InsightsPanel({ signals, savedRoles, learnedOrgs }) {
+  const savedList = Object.values(savedRoles);
+  const totalSaved = savedList.length;
+  const userSubmitted = savedList.filter(r => r.source === "user_submitted").length;
+
+  // City breakdown
+  const cityCount = {};
+  signals.forEach(s => { cityCount[s.city] = (cityCount[s.city] || 0) + 1; });
+  const cities = Object.entries(cityCount).sort((a,b) => b[1]-a[1]);
+  const topCity = cities[0]?.[0] || "—";
+
+  // Category breakdown
+  const catCount = {};
+  signals.forEach(s => { catCount[s.category] = (catCount[s.category] || 0) + 1; });
+  const cats = Object.entries(catCount).sort((a,b) => b[1]-a[1]);
+  const topCat = cats[0]?.[0] || "—";
+
+  // Relevance breakdown
+  const relCount = { High: 0, Medium: 0, Low: 0 };
+  savedList.forEach(r => { if (relCount[r.relevance] !== undefined) relCount[r.relevance]++; });
+
+  // Org breakdown
+  const orgCount = {};
+  savedList.forEach(r => { const o = r.orgName || r.org; orgCount[o] = (orgCount[o] || 0) + 1; });
+  const topOrgs = Object.entries(orgCount).sort((a,b) => b[1]-a[1]).slice(0,5);
+
+  const Bar = ({ label, value, max, color }) => (
+    <div style={{ marginBottom: 10 }}>
+      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
+        <span style={{ color: "#555", fontWeight: 600 }}>{label}</span>
+        <span style={{ color, fontWeight: 800 }}>{value}</span>
+      </div>
+      <div style={{ height: 6, background: "#E8E8E8", borderRadius: 3, overflow: "hidden" }}>
+        <div style={{ width: `${(value/max)*100}%`, height: "100%", background: color, borderRadius: 3, transition: "width 0.6s ease" }} />
+      </div>
+    </div>
+  );
+
+  if (!totalSaved && !signals.length) return (
+    <div style={{ textAlign: "center", padding: "48px 24px", color: "#AAA" }}>
+      <div style={{ fontSize: 36, marginBottom: 12 }}>📊</div>
+      <div style={{ fontSize: 14, fontWeight: 600, color: "#888" }}>No insights yet</div>
+      <div style={{ fontSize: 12, marginTop: 6 }}>Save roles or run scans to start building your search picture</div>
+    </div>
+  );
+
+  return (
+    <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+      {/* Summary cards */}
+      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
+        {[
+          { label: "Roles Saved", value: totalSaved, color: "#1B2A4A", bg: "#F0F3F8" },
+          { label: "User Added", value: userSubmitted, color: "#5B4DB8", bg: "#F0EEFF" },
+          { label: "Top City", value: topCity, color: "#1E6B3C", bg: "#EAF4EE" },
+          { label: "Top Category", value: topCat.split(" ")[0], color: "#B8732A", bg: "#FDF3E3" },
+        ].map(s => (
+          <div key={s.label} style={{ background: s.bg, borderRadius: 10, padding: "14px 16px" }}>
+            <div style={{ fontSize: 18, fontWeight: 800, color: s.color, lineHeight: 1.2, marginBottom: 4 }}>{s.value}</div>
+            <div style={{ fontSize: 11, color: "#888" }}>{s.label}</div>
+          </div>
+        ))}
+      </div>
+
+      {/* City distribution */}
+      {cities.length > 0 && (
+        <div style={{ background: "#FFF", border: "1.5px solid #E4E4E4", borderRadius: 10, padding: "16px 18px" }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A", marginBottom: 14 }}>City Focus</div>
+          {cities.map(([city, count]) => (
+            <Bar key={city} label={city} value={count} max={cities[0][1]} color="#1D6A72" />
+          ))}
+          <div style={{ fontSize: 11, color: "#AAA", marginTop: 8 }}>
+            {topCity} is driving the search — scans are being weighted toward this city.
+          </div>
+        </div>
+      )}
+
+      {/* Category distribution */}
+      {cats.length > 0 && (
+        <div style={{ background: "#FFF", border: "1.5px solid #E4E4E4", borderRadius: 10, padding: "16px 18px" }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A", marginBottom: 14 }}>Category Focus</div>
+          {cats.map(([cat, count]) => (
+            <Bar key={cat} label={cat} value={count} max={cats[0][1]} color="#1E6B3C" />
+          ))}
+        </div>
+      )}
+
+      {/* Relevance breakdown */}
+      <div style={{ background: "#FFF", border: "1.5px solid #E4E4E4", borderRadius: 10, padding: "16px 18px" }}>
+        <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A", marginBottom: 14 }}>Relevance Breakdown</div>
+        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
+          {[
+            { label: "High", value: relCount.High, color: "#1E6B3C", bg: "#EAF4EE" },
+            { label: "Medium", value: relCount.Medium, color: "#B8732A", bg: "#FDF3E3" },
+            { label: "Low", value: relCount.Low, color: "#888", bg: "#F0F0F0" },
+          ].map(r => (
+            <div key={r.label} style={{ background: r.bg, borderRadius: 8, padding: "12px 14px", textAlign: "center" }}>
+              <div style={{ fontSize: 22, fontWeight: 800, color: r.color, fontFamily: "monospace" }}>{r.value}</div>
+              <div style={{ fontSize: 11, color: "#888" }}>{r.label}</div>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      {/* Top orgs */}
+      {topOrgs.length > 0 && (
+        <div style={{ background: "#FFF", border: "1.5px solid #E4E4E4", borderRadius: 10, padding: "16px 18px" }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A", marginBottom: 14 }}>Most Active Orgs</div>
+          {topOrgs.map(([org, count]) => (
+            <div key={org} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: "1px solid #F4F4F4" }}>
+              <div style={{ flex: 1, fontSize: 13, color: "#333", fontWeight: 600 }}>{org}</div>
+              <div style={{ fontSize: 12, fontWeight: 800, color: "#1D6A72", background: "#E8F4F5", padding: "2px 8px", borderRadius: 4 }}>{count} role{count > 1 ? "s" : ""}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Learned orgs */}
+      {learnedOrgs.length > 0 && (
+        <div style={{ background: "#F0EEFF", border: "1.5px solid #5B4DB8", borderRadius: 10, padding: "16px 18px" }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: "#5B4DB8", marginBottom: 6 }}>Orgs Discovered via Saved Roles</div>
+          <div style={{ fontSize: 12, color: "#777", marginBottom: 12, lineHeight: 1.5 }}>
+            These organisations surfaced through broader searches or user-submitted postings. They've been added to your learning signals.
+          </div>
+          {learnedOrgs.map(o => (
+            <div key={o.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid #E4DCFF" }}>
+              <div style={{ flex: 1, fontSize: 13, color: "#333", fontWeight: 600 }}>{o.name}</div>
+              <div style={{ fontSize: 11, color: "#5B4DB8" }}>{o.city} · {o.category}</div>
+            </div>
+          ))}
+        </div>
+      )}
+
+      {/* Adaptive context preview */}
+      {signals.length > 0 && (
+        <div style={{ background: "#1B2A4A", borderRadius: 10, padding: "14px 16px" }}>
+          <div style={{ fontSize: 11, fontWeight: 800, color: "#4DADA3", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
+            Active Learning Signal ({signals.length} signals)
+          </div>
+          <div style={{ fontSize: 12, color: "#7A9CC4", lineHeight: 1.6 }}>
+            Next scan will be weighted toward <strong style={{ color: "#FFF" }}>{topCity}</strong> and <strong style={{ color: "#FFF" }}>{topCat}</strong> based on your saved roles. Relevance scoring is being calibrated to your actual selections.
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // ─────────────────────────────────────────────────────────────────────────────
 export default function App() {
   const [tab, setTab] = useState("orgscan");
   const [orgResults, setOrgResults] = useState({});
   const [broaderResults, setBroaderResults] = useState({});
   const [savedRoles, setSavedRoles] = useState({});
+  const [signals, setSignals] = useState([]);
+  const [learnedOrgs, setLearnedOrgs] = useState([]);
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
     async function init() {
-      const [org, broader, saved] = await Promise.all([
+      const [org, broader, saved, sigs, lorgs] = await Promise.all([
         loadScanResults("org"),
         loadScanResults("broader"),
-        loadSavedRoles()
+        loadSavedRoles(),
+        loadFeedbackSignals(),
+        loadLearnedOrgs()
       ]);
       setOrgResults(org);
       setBroaderResults(broader);
       setSavedRoles(saved);
+      setSignals(sigs);
+      setLearnedOrgs(lorgs);
       setLoading(false);
     }
     init();
   }, []);
 
+  const adaptiveContext = buildAdaptiveContext(signals);
+
   const stats = useGlobalStats(orgResults, broaderResults, savedRoles);
 
   const tabs = [
-    { key: "orgscan", label: "Org Scan" },
-    { key: "broader", label: "Broader Search" },
-    { key: "saved",   label: `Saved ★ ${stats.starred > 0 ? stats.starred : ""}` },
+    { key: "orgscan",  label: "Org Scan" },
+    { key: "broader",  label: "Broader Search" },
+    { key: "saved",    label: `Saved ★ ${stats.starred > 0 ? stats.starred : ""}` },
+    { key: "add",      label: "+ Add Posting" },
+    { key: "insights", label: "Insights" },
   ];
 
   return (
@@ -799,23 +1189,37 @@ export default function App() {
           <OrgScanPanel
             results={orgResults} setResults={setOrgResults}
             savedRoles={savedRoles} setSavedRoles={setSavedRoles}
+            adaptiveContext={adaptiveContext}
           />
         )}
         {tab === "broader" && (
           <BroaderSearchPanel
             results={broaderResults} setResults={setBroaderResults}
             savedRoles={savedRoles} setSavedRoles={setSavedRoles}
+            adaptiveContext={adaptiveContext}
           />
         )}
         {tab === "saved" && (
           <SavedPanel savedRoles={savedRoles} setSavedRoles={setSavedRoles} />
+        )}
+        {tab === "add" && (
+          <AddPostingPanel
+            savedRoles={savedRoles} setSavedRoles={setSavedRoles}
+            setSignals={setSignals}
+          />
+        )}
+        {tab === "insights" && (
+          <InsightsPanel
+            signals={signals} savedRoles={savedRoles}
+            learnedOrgs={learnedOrgs}
+          />
         )}
       </div>
 
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v5 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v6 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
