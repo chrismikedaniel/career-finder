@@ -188,6 +188,63 @@ function buildAdaptiveContext(signals) {
   return `\n\nLEARNED PREFERENCES (from ${signals.length} saved roles): Top cities: ${topCities.join(", ")}. Top categories: ${topCats.join(", ")}. Weight these higher in relevance scoring.`;
 }
 
+// ─── ORG / SEARCH PERFORMANCE SCORING ─ prioritization + deprioritization ───
+// Score model per org/search source:
+//   +2  per starred role sourced from it
+//   +1  per role found (shown) that was never starred, capped contribution
+//   -3  per scan that returned zero roles
+// Buckets: score >= 4 "hot", -1 to 3 "neutral", <= -2 "cold"
+
+function computeSourcePerformance(scanResults, savedRolesList, scanKind) {
+  const perf = {};
+  Object.entries(scanResults).forEach(([id, r]) => {
+    const roles = (scanKind === "org" ? r.openRoles : r.topRoles) || [];
+    if (!perf[id]) perf[id] = { score: 0, scans: 0, zeroScans: 0, rolesShown: 0, rolesStarred: 0, lastTs: 0 };
+    perf[id].scans += 1;
+    perf[id].lastTs = Math.max(perf[id].lastTs, r._ts || 0);
+    if (roles.length === 0) {
+      perf[id].zeroScans += 1;
+      perf[id].score -= 3;
+    } else {
+      perf[id].rolesShown += roles.length;
+      const roleIds = new Set(roles.map(x => x.id));
+      const starredFromThis = savedRolesList.filter(sr => roleIds.has(sr.id)).length;
+      perf[id].rolesStarred += starredFromThis;
+      perf[id].score += starredFromThis * 2;
+      perf[id].score += Math.min(roles.length - starredFromThis, 3) * 1;
+    }
+  });
+  return perf;
+}
+
+function perfBucket(score) {
+  if (score >= 4) return "hot";
+  if (score <= -2) return "cold";
+  return "neutral";
+}
+
+const BUCKET_CFG = {
+  hot:     { label: "High yield",  color: "#1E6B3C", bg: "#EAF4EE" },
+  neutral: { label: "Active",      color: "#888",    bg: "#F0F0F0" },
+  cold:    { label: "Low yield",   color: "#A63228", bg: "#FDF0F0" },
+};
+
+function buildPerformanceContext(orgPerf, broaderPerf, orgList, searchList) {
+  const coldOrgs = Object.entries(orgPerf).filter(([, p]) => perfBucket(p.score) === "cold").map(([id]) => orgList.find(o => o.id === id)?.name).filter(Boolean);
+  const hotOrgs = Object.entries(orgPerf).filter(([, p]) => perfBucket(p.score) === "hot").map(([id]) => orgList.find(o => o.id === id)?.name).filter(Boolean);
+  const coldSearches = Object.entries(broaderPerf).filter(([, p]) => perfBucket(p.score) === "cold").map(([id]) => searchList.find(s => s.id === id)?.category).filter(Boolean);
+  const hotSearches = Object.entries(broaderPerf).filter(([, p]) => perfBucket(p.score) === "hot").map(([id]) => searchList.find(s => s.id === id)?.category).filter(Boolean);
+
+  if (!coldOrgs.length && !hotOrgs.length && !coldSearches.length && !hotSearches.length) return "";
+
+  let ctx = "\n\nPERFORMANCE HISTORY:";
+  if (hotOrgs.length) ctx += ` High-yield orgs producing starred roles: ${hotOrgs.join(", ")} — treat similar roles as High relevance.`;
+  if (coldOrgs.length) ctx += ` Low-yield orgs with repeated empty scans or unstarred results: ${coldOrgs.join(", ")} — be more conservative, do not inflate relevance here.`;
+  if (hotSearches.length) ctx += ` High-yield categories: ${hotSearches.join(", ")}.`;
+  if (coldSearches.length) ctx += ` Low-yield categories to deprioritize: ${coldSearches.join(", ")}.`;
+  return ctx;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // API — real-time web search
 // ─────────────────────────────────────────────────────────────────────────────
@@ -268,11 +325,12 @@ function RoleRow({ role, orgName, isSaved, onToggleSave }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // GLOBAL STATS HOOK — shared across panels
 // ─────────────────────────────────────────────────────────────────────────────
-function useGlobalStats(orgResults, broaderResults, savedRoles) {
+function useGlobalStats(orgResults, broaderResults, savedRoles, learnedOrgs) {
+  const learnedCount = (learnedOrgs || []).length;
   const orgScanned = TARGET_ORGS.filter(o => orgResults[o.id]).length;
   const broaderScanned = BROADER_SEARCHES.filter(s => broaderResults[s.id]).length;
   const totalScanned = orgScanned + broaderScanned;
-  const totalSources = TARGET_ORGS.length + BROADER_SEARCHES.length;
+  const totalSources = TARGET_ORGS.length + BROADER_SEARCHES.length + learnedCount;
 
   const orgRoles = Object.values(orgResults).flatMap(r => r?.openRoles || []);
   const broaderRoles = Object.values(broaderResults).flatMap(r => r?.topRoles || []);
@@ -288,16 +346,40 @@ function useGlobalStats(orgResults, broaderResults, savedRoles) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ORG SCAN PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext }) {
+function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, learnedOrgs, orgPerf }) {
   const [scanning, setScanning] = useState({});
   const [cityFilter, setCityFilter] = useState("All");
   const [scanningAll, setScanningAll] = useState(false);
 
-  const orgCities = ["All", ...Array.from(new Set(TARGET_ORGS.map(o => o.city.split(" / ")[0])))];
+  // Merge named orgs with learned orgs (deduped by name)
+  const namedNames = new Set(TARGET_ORGS.map(o => o.name.toLowerCase()));
+  const learnedOrgRows = (learnedOrgs || [])
+    .filter(lo => !namedNames.has(lo.name.toLowerCase()))
+    .map(lo => ({
+      id: `learned-${lo.id}`,
+      name: lo.name,
+      fullName: lo.name,
+      city: lo.city || "Unknown",
+      category: lo.category || "Advocacy",
+      urgency: "Check now",
+      careersUrl: `https://www.google.com/search?q=${encodeURIComponent(lo.name + " careers jobs")}`,
+      searchHint: `Discovered via saved roles — ${lo.category || "advocacy"} focus`,
+      isLearned: true
+    }));
 
-  const filtered = TARGET_ORGS.filter(o =>
+  const allOrgs = [...TARGET_ORGS, ...learnedOrgRows];
+  const allCities = ["All", ...Array.from(new Set(allOrgs.map(o => o.city.split(" / ")[0])))];
+
+  const filteredUnsorted = allOrgs.filter(o =>
     cityFilter === "All" || o.city === cityFilter || o.city.startsWith(cityFilter)
   );
+
+  // Sort: hot (high yield) first, cold (low yield) last, neutral/unscanned in between
+  const filtered = [...filteredUnsorted].sort((a, b) => {
+    const scoreA = orgPerf?.[a.id]?.score ?? 0;
+    const scoreB = orgPerf?.[b.id]?.score ?? 0;
+    return scoreB - scoreA;
+  });
 
   const handleSave = useCallback(async (roleId, role, orgName, shouldSave) => {
     if (shouldSave) {
@@ -375,7 +457,7 @@ Return JSON:
     <div>
       {/* City filter + scan all */}
       <div style={{ display: "flex", gap: 6, flexWrap: "wrap", marginBottom: 14, alignItems: "center" }}>
-        {orgCities.map(c => (
+        {allCities.map(c => (
           <button key={c} onClick={() => setCityFilter(c)} style={{
             padding: "5px 11px", borderRadius: 6, fontWeight: 700, fontSize: 11, cursor: "pointer", fontFamily: "inherit",
             border: `1.5px solid ${cityFilter === c ? "#1B2A4A" : "#DDD"}`,
@@ -406,7 +488,18 @@ Return JSON:
             {/* Org header row */}
             <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: r ? "#FAFAFA" : "#FFF" }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A" }}>{org.name}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A" }}>{org.name}</div>
+                  {org.isLearned && <span style={{ fontSize: 9, fontWeight: 800, color: "#5B4DB8", background: "#F0EEFF", padding: "1px 6px", borderRadius: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>Learned</span>}
+                  {(() => {
+                    const p = orgPerf?.[org.id];
+                    if (!p || p.scans === 0) return null;
+                    const bucket = perfBucket(p.score);
+                    if (bucket === "neutral") return null;
+                    const cfg = BUCKET_CFG[bucket];
+                    return <span style={{ fontSize: 9, fontWeight: 800, color: cfg.color, background: cfg.bg, padding: "1px 6px", borderRadius: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>{cfg.label}</span>;
+                  })()}
+                </div>
                 <div style={{ fontSize: 11, color: "#888" }}>{org.city} · {org.category}</div>
                 {org.searchHint && <div style={{ fontSize: 11, color: "#777", marginTop: 2, lineHeight: 1.4 }}>{org.searchHint}</div>}
               </div>
@@ -468,14 +561,21 @@ Return JSON:
 // ─────────────────────────────────────────────────────────────────────────────
 // BROADER SEARCH PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext }) {
+function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, broaderPerf }) {
   const [running, setRunning] = useState({});
   const [cityFilter, setCityFilter] = useState("All");
   const [runningAll, setRunningAll] = useState(false);
 
-  const filtered = BROADER_SEARCHES.filter(s =>
+  const filteredUnsorted = BROADER_SEARCHES.filter(s =>
     cityFilter === "All" || s.city === cityFilter || s.city.includes(cityFilter)
   );
+
+  // Sort: hot (high yield) first, cold (low yield) last
+  const filtered = [...filteredUnsorted].sort((a, b) => {
+    const scoreA = broaderPerf?.[a.id]?.score ?? 0;
+    const scoreB = broaderPerf?.[b.id]?.score ?? 0;
+    return scoreB - scoreA;
+  });
 
   const handleSave = useCallback(async (roleId, role, orgName, shouldSave) => {
     if (shouldSave) {
@@ -579,7 +679,17 @@ Return JSON:
             {/* Search header row */}
             <div style={{ display: "flex", alignItems: "center", gap: 12, padding: "10px 14px", background: r ? "#FAFAFA" : "#FFF" }}>
               <div style={{ flex: 1, minWidth: 0 }}>
-                <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A" }}>{search.label}</div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
+                  <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A" }}>{search.label}</div>
+                  {(() => {
+                    const p = broaderPerf?.[search.id];
+                    if (!p || p.scans === 0) return null;
+                    const bucket = perfBucket(p.score);
+                    if (bucket === "neutral") return null;
+                    const cfg = BUCKET_CFG[bucket];
+                    return <span style={{ fontSize: 9, fontWeight: 800, color: cfg.color, background: cfg.bg, padding: "1px 6px", borderRadius: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>{cfg.label}</span>;
+                  })()}
+                </div>
                 <div style={{ fontSize: 11, color: "#888" }}>{search.city} · {search.category}</div>
                 {search.hint && <div style={{ fontSize: 11, color: "#777", marginTop: 2, lineHeight: 1.4 }}>{search.hint}</div>}
               </div>
@@ -737,7 +847,7 @@ function SavedPanel({ savedRoles, setSavedRoles }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v6", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v11", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -938,7 +1048,7 @@ Return JSON:
 // ─────────────────────────────────────────────────────────────────────────────
 // INSIGHTS PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function InsightsPanel({ signals, savedRoles, learnedOrgs }) {
+function InsightsPanel({ signals, savedRoles, learnedOrgs, orgPerf, broaderPerf }) {
   const savedList = Object.values(savedRoles);
   const totalSaved = savedList.length;
   const userSubmitted = savedList.filter(r => r.source === "user_submitted").length;
@@ -1054,6 +1164,34 @@ function InsightsPanel({ signals, savedRoles, learnedOrgs }) {
         </div>
       )}
 
+      {/* Source performance — prioritization / deprioritization */}
+      {(Object.keys(orgPerf || {}).length > 0 || Object.keys(broaderPerf || {}).length > 0) && (
+        <div style={{ background: "#FFF", border: "1.5px solid #E4E4E4", borderRadius: 10, padding: "16px 18px" }}>
+          <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A", marginBottom: 4 }}>Source Performance</div>
+          <div style={{ fontSize: 11, color: "#999", marginBottom: 12, lineHeight: 1.5 }}>
+            Orgs and searches are automatically prioritized or deprioritized based on starred roles versus empty or ignored scans. Nothing is ever removed — low-yield sources just sink to the bottom of their list.
+          </div>
+          {(() => {
+            const orgRows = Object.entries(orgPerf || {}).map(([id, p]) => ({ id, name: TARGET_ORGS.find(o => o.id === id)?.name || id, ...p, kind: "Org" }));
+            const searchRows = Object.entries(broaderPerf || {}).map(([id, p]) => ({ id, name: BROADER_SEARCHES.find(s => s.id === id)?.label || id, ...p, kind: "Search" }));
+            const allRows = [...orgRows, ...searchRows].sort((a,b) => b.score - a.score);
+            if (!allRows.length) return null;
+            return allRows.map(row => {
+              const bucket = perfBucket(row.score);
+              const cfg = BUCKET_CFG[bucket];
+              return (
+                <div key={row.kind + row.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: "1px solid #F4F4F4" }}>
+                  <div style={{ flex: 1, fontSize: 13, color: "#333", fontWeight: 600 }}>{row.name}</div>
+                  <div style={{ fontSize: 10, color: "#AAA" }}>{row.kind}</div>
+                  <div style={{ fontSize: 11, color: "#888" }}>{row.rolesStarred || 0} starred · {row.rolesShown || 0} shown{row.zeroScans ? ` · ${row.zeroScans} empty` : ""}</div>
+                  <span style={{ fontSize: 10, fontWeight: 800, color: cfg.color, background: cfg.bg, padding: "2px 8px", borderRadius: 4 }}>{cfg.label}</span>
+                </div>
+              );
+            });
+          })()}
+        </div>
+      )}
+
       {/* Learned orgs */}
       {learnedOrgs.length > 0 && (
         <div style={{ background: "#F0EEFF", border: "1.5px solid #5B4DB8", borderRadius: 10, padding: "16px 18px" }}>
@@ -1116,8 +1254,13 @@ export default function App() {
   }, []);
 
   const adaptiveContext = buildAdaptiveContext(signals);
+  const stats = useGlobalStats(orgResults, broaderResults, savedRoles, learnedOrgs);
 
-  const stats = useGlobalStats(orgResults, broaderResults, savedRoles);
+  const savedRolesList = Object.values(savedRoles);
+  const orgPerf = computeSourcePerformance(orgResults, savedRolesList, "org");
+  const broaderPerf = computeSourcePerformance(broaderResults, savedRolesList, "broader");
+  const perfContext = buildPerformanceContext(orgPerf, broaderPerf, TARGET_ORGS, BROADER_SEARCHES);
+  const fullAdaptiveContext = adaptiveContext + perfContext;
 
   const tabs = [
     { key: "orgscan",  label: "Org Scan" },
@@ -1189,14 +1332,17 @@ export default function App() {
           <OrgScanPanel
             results={orgResults} setResults={setOrgResults}
             savedRoles={savedRoles} setSavedRoles={setSavedRoles}
-            adaptiveContext={adaptiveContext}
+            adaptiveContext={fullAdaptiveContext}
+            learnedOrgs={learnedOrgs}
+            orgPerf={orgPerf}
           />
         )}
         {tab === "broader" && (
           <BroaderSearchPanel
             results={broaderResults} setResults={setBroaderResults}
             savedRoles={savedRoles} setSavedRoles={setSavedRoles}
-            adaptiveContext={adaptiveContext}
+            adaptiveContext={fullAdaptiveContext}
+            broaderPerf={broaderPerf}
           />
         )}
         {tab === "saved" && (
@@ -1212,6 +1358,7 @@ export default function App() {
           <InsightsPanel
             signals={signals} savedRoles={savedRoles}
             learnedOrgs={learnedOrgs}
+            orgPerf={orgPerf} broaderPerf={broaderPerf}
           />
         )}
       </div>
@@ -1219,7 +1366,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v6 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v11 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
