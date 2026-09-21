@@ -343,21 +343,41 @@ function RelBadge({ rel }) {
 }
 
 // Compact role row — clickable title links to posting, star to save
-function ThumbBar({ roleId, orgName }) {
-  const [thumb, setThumb] = useState(null); // null | "up" | "down"
-  const [notes, setNotes] = useState("");
-  const [submitted, setSubmitted] = useState(false);
+function ThumbBar({ roleId, orgName, signals }) {
+  // Initialize from persisted signal if one exists for this role
+  const existing = (signals || []).find(s => s.id === "thumb-" + roleId);
+  const [thumb, setThumb] = useState(existing?.thumb || null);
+  const [notes, setNotes] = useState(existing?.notes || "");
+  const [editing, setEditing] = useState(false);
+  const [saving, setSaving] = useState(false);
+  const [saved, setSaved] = useState(false);
+
+  // Sync if signals load after initial render (e.g. on mount)
+  useEffect(() => {
+    if (existing && !editing) {
+      setThumb(existing.thumb || null);
+      setNotes(existing.notes || "");
+    }
+  }, [existing?.thumb, existing?.notes]);
 
   const handleThumb = (val) => {
-    setThumb(prev => prev === val ? null : val);
-    setSubmitted(false);
+    const next = thumb === val ? null : val;
+    setThumb(next);
+    setEditing(true);
+    setSaved(false);
   };
 
   const handleSubmit = async () => {
+    if (!thumb) return;
+    setSaving(true);
     await submitThumb(roleId, orgName, thumb, notes);
-    setSubmitted(true);
-    setTimeout(() => setSubmitted(false), 2000);
+    setSaving(false);
+    setSaved(true);
+    setEditing(false);
+    setTimeout(() => setSaved(false), 2000);
   };
+
+  const isLogged = !editing && !!thumb;
 
   return (
     <div style={{ marginTop: 4 }}>
@@ -365,19 +385,37 @@ function ThumbBar({ roleId, orgName }) {
         <button onClick={() => handleThumb("up")} title="Good fit" style={{
           background: thumb === "up" ? "#EAF4EE" : "none", border: "none", cursor: "pointer",
           fontSize: 14, padding: "2px 5px", borderRadius: 4, lineHeight: 1,
-          color: thumb === "up" ? "#1E6B3C" : "#BBB", transition: "all 0.15s"
+          color: thumb === "up" ? "#1E6B3C" : "#BBB", transition: "all 0.15s",
+          opacity: isLogged && thumb !== "up" ? 0.35 : 1
         }}>👍</button>
         <button onClick={() => handleThumb("down")} title="Not a fit" style={{
           background: thumb === "down" ? "#FDF0F0" : "none", border: "none", cursor: "pointer",
           fontSize: 14, padding: "2px 5px", borderRadius: 4, lineHeight: 1,
-          color: thumb === "down" ? "#A63228" : "#BBB", transition: "all 0.15s"
+          color: thumb === "down" ? "#A63228" : "#BBB", transition: "all 0.15s",
+          opacity: isLogged && thumb !== "down" ? 0.35 : 1
         }}>👎</button>
-        {thumb && !submitted && (
+
+        {/* Saved state: show note preview + edit link */}
+        {isLogged && notes && (
+          <span style={{ fontSize: 10, color: "#888", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+            "{notes}"
+          </span>
+        )}
+        {isLogged && (
+          <button onClick={() => setEditing(true)} style={{
+            fontSize: 10, color: "#5A7FAA", background: "none", border: "none",
+            cursor: "pointer", padding: "0 4px", fontFamily: "inherit"
+          }}>Edit</button>
+        )}
+
+        {/* Editing state: note input + send */}
+        {editing && thumb && (
           <>
             <input
               value={notes}
               onChange={e => setNotes(e.target.value)}
               placeholder="Optional note…"
+              autoFocus
               onKeyDown={e => e.key === "Enter" && handleSubmit()}
               style={{
                 flex: 1, fontSize: 11, padding: "3px 7px", borderRadius: 4,
@@ -385,19 +423,24 @@ function ThumbBar({ roleId, orgName }) {
                 color: "#333", background: "#FAFAFA"
               }}
             />
-            <button onClick={handleSubmit} style={{
+            <button onClick={handleSubmit} disabled={saving} style={{
               fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 4,
-              border: "none", background: "#1B2A4A", color: "#FFF", cursor: "pointer", fontFamily: "inherit"
-            }}>Send</button>
+              border: "none", background: "#1B2A4A", color: "#FFF", cursor: "pointer", fontFamily: "inherit",
+              opacity: saving ? 0.6 : 1
+            }}>{saving ? "…" : "Save"}</button>
+            <button onClick={() => { setEditing(false); setThumb(existing?.thumb || null); setNotes(existing?.notes || ""); }} style={{
+              fontSize: 10, color: "#AAA", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit"
+            }}>✕</button>
           </>
         )}
-        {submitted && <span style={{ fontSize: 10, color: "#1E6B3C", fontWeight: 700 }}>✓ Logged</span>}
+
+        {saved && <span style={{ fontSize: 10, color: "#1E6B3C", fontWeight: 700 }}>✓ Saved</span>}
       </div>
     </div>
   );
 }
 
-function RoleRow({ role, orgName, isSaved, onToggleSave }) {
+function RoleRow({ role, orgName, isSaved, onToggleSave, signals }) {
   const postingUrl = role.directUrl || role.linkedInUrl || role.idealistUrl || null;
   return (
     <div style={{ padding: "8px 0", borderBottom: "1px solid #F4F4F4" }}>
@@ -416,7 +459,7 @@ function RoleRow({ role, orgName, isSaved, onToggleSave }) {
         <RelBadge rel={role.relevance} />
         <button onClick={onToggleSave} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18, color: isSaved ? "#F5C842" : "#CCC", transition: "color 0.15s", flexShrink: 0, lineHeight: 1 }}>{isSaved ? "★" : "☆"}</button>
       </div>
-      <ThumbBar roleId={role.id} orgName={orgName || role.org} />
+      <ThumbBar roleId={role.id} orgName={orgName || role.org} signals={signals} />
     </div>
   );
 }
@@ -445,7 +488,7 @@ function useGlobalStats(orgResults, broaderResults, savedRoles, learnedOrgs) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ORG SCAN PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, learnedOrgs, setLearnedOrgs, orgPerf }) {
+function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, learnedOrgs, setLearnedOrgs, orgPerf, signals }) {
   const [scanning, setScanning] = useState({});
   const [cityFilter, setCityFilter] = useState("All");
   const [scanningAll, setScanningAll] = useState(false);
@@ -654,6 +697,7 @@ Return JSON:
                     orgName={org.name}
                     isSaved={!!savedRoles[role.id]}
                     onToggleSave={() => handleSave(role.id, role, org.name, !savedRoles[role.id])}
+                    signals={signals}
                   />
                 ))}
               </div>
@@ -676,7 +720,7 @@ Return JSON:
 // ─────────────────────────────────────────────────────────────────────────────
 // BROADER SEARCH PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, broaderPerf, setLearnedOrgs }) {
+function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, broaderPerf, setLearnedOrgs, signals }) {
   const [running, setRunning] = useState({});
   const [cityFilter, setCityFilter] = useState("All");
   const [runningAll, setRunningAll] = useState(false);
@@ -843,6 +887,7 @@ Return JSON:
                     orgName={role.org}
                     isSaved={!!savedRoles[role.id]}
                     onToggleSave={() => handleSave(role.id, role, role.org, !savedRoles[role.id])}
+                    signals={signals}
                   />
                 ))}
               </div>
@@ -891,7 +936,7 @@ Dad`
   return `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(BELLA_EMAIL)}&su=${subject}&body=${body}`;
 }
 
-function SavedRoleRow({ role, onRemove }) {
+function SavedRoleRow({ role, onRemove, signals }) {
   const postingUrl = role.directUrl || role.linkedInUrl || role.idealistUrl || null;
   const emailLink = buildEmailLink(role);
 
@@ -915,7 +960,7 @@ function SavedRoleRow({ role, onRemove }) {
         {role.whyFit && (
           <div style={{ fontSize: 11, color: "#666", marginTop: 6, lineHeight: 1.5, fontStyle: "italic" }}>{role.whyFit}</div>
         )}
-        <ThumbBar roleId={role.id} orgName={role.orgName || role.org} />
+        <ThumbBar roleId={role.id} orgName={role.orgName || role.org} signals={signals} />
       </div>
 
       {/* Action buttons */}
@@ -948,7 +993,7 @@ function SavedRoleRow({ role, onRemove }) {
   );
 }
 
-function SavedPanel({ savedRoles, setSavedRoles }) {
+function SavedPanel({ savedRoles, setSavedRoles, signals }) {
   const [showExport, setShowExport] = useState(false);
   const [exportText, setExportText] = useState("");
 
@@ -964,7 +1009,7 @@ function SavedPanel({ savedRoles, setSavedRoles }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v20", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v22", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -997,14 +1042,14 @@ function SavedPanel({ savedRoles, setSavedRoles }) {
       {high.length > 0 && (
         <>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#1E6B3C", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>High Relevance</div>
-          {high.map(r => <SavedRoleRow key={r.id} role={r} onRemove={() => handleRemove(r.id)} />)}
+          {high.map(r => <SavedRoleRow key={r.id} role={r} onRemove={() => handleRemove(r.id)} signals={signals} />)}
         </>
       )}
 
       {other.length > 0 && (
         <>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#888", textTransform: "uppercase", letterSpacing: "0.06em", margin: "14px 0 8px" }}>Other Saved</div>
-          {other.map(r => <SavedRoleRow key={r.id} role={r} onRemove={() => handleRemove(r.id)} />)}
+          {other.map(r => <SavedRoleRow key={r.id} role={r} onRemove={() => handleRemove(r.id)} signals={signals} />)}
         </>
       )}
 
@@ -1022,7 +1067,7 @@ function SavedPanel({ savedRoles, setSavedRoles }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // ADD POSTING PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function AddPostingPanel({ savedRoles, setSavedRoles, setSignals, setLearnedOrgs }) {
+function AddPostingPanel({ savedRoles, setSavedRoles, setSignals, setLearnedOrgs, signals }) {
   const [url, setUrl] = useState("");
   const [status, setStatus] = useState("idle"); // idle | loading | success | error
   const [result, setResult] = useState(null);
@@ -1150,7 +1195,7 @@ Return JSON:
                 {result.howToApply}
               </div>
             )}
-            <ThumbBar roleId={result.id} orgName={result.org} />
+            <ThumbBar roleId={result.id} orgName={result.org} signals={signals} />
             <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
               <button onClick={handleSave} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none", background: "#1E6B3C", color: "#FFF", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
                 ★ Save to Roles
@@ -1410,47 +1455,46 @@ export default function App() {
       `}</style>
 
       {/* ── HEADER ── */}
-      <div style={{ background: "#1B2A4A", padding: "16px 20px 0" }}>
+      <div style={{ background: "#1B2A4A", padding: "12px 16px 0" }}>
         <div style={{ maxWidth: 820, margin: "0 auto" }}>
 
-          {/* App name + tagline */}
-          <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 16, marginBottom: 14 }}>
-            <div>
-              <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
-                <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+CiAgPCEtLSBOYXZ5IGNpcmNsZSAtLT4KICA8Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSIzMCIgZmlsbD0iIzFCMkE0QSIvPgogIDwhLS0gVGVhbCBkYXNoZWQgcmluZyAtLT4KICA8Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSIyNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNERBREEzIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1kYXNoYXJyYXk9IjUgMyIvPgogIDwhLS0gTm9ydGggc3Bpa2UgKHRlYWwsIHRhbGwpIC0tPgogIDxwb2x5Z29uIHBvaW50cz0iMzIsOCAzNiwyNiAzMiwyMiAyOCwyNiIgZmlsbD0iIzREQURBMyIvPgogIDwhLS0gU291dGggbnViIChtdXRlZCkgLS0+CiAgPHBvbHlnb24gcG9pbnRzPSIzMiw1NiAzNSw0MCAzMiw0NCAyOSw0MCIgZmlsbD0iIzVBN0ZBQSIvPgogIDwhLS0gRWFzdCBudWIgLS0+CiAgPHBvbHlnb24gcG9pbnRzPSI1NiwzMiA0MCwyOSA0NCwzMiA0MCwzNSIgZmlsbD0iIzVBN0ZBQSIvPgogIDwhLS0gV2VzdCBudWIgLS0+CiAgPHBvbHlnb24gcG9pbnRzPSI4LDMyIDI0LDM1IDIwLDMyIDI0LDI5IiBmaWxsPSIjNUE3RkFBIi8+CiAgPCEtLSBHb2xkIGNlbnRlciBkb3QgLS0+CiAgPGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iNCIgZmlsbD0iI0Y1Qzg0MiIvPgo8L3N2Zz4K" alt="Career Discovery System logo" style={{ width: 36, height: 36, flexShrink: 0 }}/>
-                <h1 style={{ fontSize: 20, fontWeight: 800, color: "#FFF", marginBottom: 3, letterSpacing: "-0.01em" }}>Job Posting Discovery Agent</h1>
-              </div>
-              <p style={{ fontSize: 11, color: "#5A7FAA" }}>Bella Daniel-Hunsicker · LGBTQ+ · Immigrant Rights · Reproductive Rights · Digital Rights</p>
-            </div>
-
-            {/* Global stats strip */}
-            <div style={{ display: "flex", gap: 16, flexShrink: 0, alignItems: "center" }}>
-              {[
-                { label: "Scanned", value: `${stats.totalScanned}/${stats.totalSources}`, color: "#FFF" },
-                { label: "Roles found", value: stats.rolesFound, color: "#FFF" },
-                { label: "High relevance", value: stats.highRelevance, color: "#4DADA3" },
-                { label: "Starred", value: stats.starred, color: "#F5C842" },
-              ].map(s => (
-                <div key={s.label} style={{ textAlign: "center" }}>
-                  <div style={{ fontSize: 20, fontWeight: 800, color: s.color, fontFamily: "monospace", lineHeight: 1 }}>{s.value}</div>
-                  <div style={{ fontSize: 9, color: "#4A6FA5", marginTop: 2, whiteSpace: "nowrap" }}>{s.label}</div>
-                </div>
-              ))}
-              <div style={{ display: "flex", alignItems: "center", gap: 4, marginLeft: 4 }}>
-                <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4DADA3", animation: "spin 3s linear infinite" }} />
-                <span style={{ fontSize: 9, color: "#4DADA3", fontWeight: 700, whiteSpace: "nowrap" }}>Live search</span>
-              </div>
+          {/* Row 1: logo + title + live dot */}
+          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
+            <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+CiAgPCEtLSBOYXZ5IGNpcmNsZSAtLT4KICA8Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSIzMCIgZmlsbD0iIzFCMkE0QSIvPgogIDwhLS0gVGVhbCBkYXNoZWQgcmluZyAtLT4KICA8Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSIyNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNERBREEzIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1kYXNoYXJyYXk9IjUgMyIvPgogIDwhLS0gTm9ydGggc3Bpa2UgKHRlYWwsIHRhbGwpIC0tPgogIDxwb2x5Z29uIHBvaW50cz0iMzIsOCAzNiwyNiAzMiwyMiAyOCwyNiIgZmlsbD0iIzREQURBMyIvPgogIDwhLS0gU291dGggbnViIChtdXRlZCkgLS0+CiAgPHBvbHlnb24gcG9pbnRzPSIzMiw1NiAzNSw0MCAzMiw0NCAyOSw0MCIgZmlsbD0iIzVBN0ZBQSIvPgogIDwhLS0gRWFzdCBudWIgLS0+CiAgPHBvbHlnb24gcG9pbnRzPSI1NiwzMiA0MCwyOSA0NCwzMiA0MCwzNSIgZmlsbD0iIzVBN0ZBQSIvPgogIDwhLS0gV2VzdCBudWIgLS0+CiAgPHBvbHlnb24gcG9pbnRzPSI4LDMyIDI0LDM1IDIwLDMyIDI0LDI5IiBmaWxsPSIjNUE3RkFBIi8+CiAgPCEtLSBHb2xkIGNlbnRlciBkb3QgLS0+CiAgPGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iNCIgZmlsbD0iI0Y1Qzg0MiIvPgo8L3N2Zz4K" alt="logo" style={{ width: 28, height: 28, flexShrink: 0 }}/>
+            <h1 style={{ fontSize: 15, fontWeight: 800, color: "#FFF", letterSpacing: "-0.01em", flex: 1, minWidth: 0 }}>Job Posting Discovery Agent</h1>
+            <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
+              <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4DADA3", animation: "spin 3s linear infinite" }} />
+              <span style={{ fontSize: 9, color: "#4DADA3", fontWeight: 700 }}>Live</span>
             </div>
           </div>
 
-          {/* Tab bar */}
-          <div style={{ display: "flex", gap: 2, borderBottom: "2px solid rgba(255,255,255,0.1)" }}>
+          {/* Row 2: stats strip */}
+          <div style={{ display: "flex", gap: 0, marginBottom: 10, background: "rgba(255,255,255,0.05)", borderRadius: 8, overflow: "hidden" }}>
+            {[
+              { label: "Scanned", value: `${stats.totalScanned}/${stats.totalSources}`, color: "#FFF" },
+              { label: "Found", value: stats.rolesFound, color: "#FFF" },
+              { label: "High", value: stats.highRelevance, color: "#4DADA3" },
+              { label: "Starred", value: stats.starred, color: "#F5C842" },
+            ].map((s, i) => (
+              <div key={s.label} style={{ flex: 1, textAlign: "center", padding: "7px 4px", borderLeft: i > 0 ? "1px solid rgba(255,255,255,0.08)" : "none" }}>
+                <div style={{ fontSize: 17, fontWeight: 800, color: s.color, fontFamily: "monospace", lineHeight: 1 }}>{s.value}</div>
+                <div style={{ fontSize: 9, color: "#4A6FA5", marginTop: 2 }}>{s.label}</div>
+              </div>
+            ))}
+          </div>
+
+          {/* Row 3: tagline */}
+          <p style={{ fontSize: 10, color: "#4A6FA5", marginBottom: 10, lineHeight: 1.4 }}>Bella Daniel-Hunsicker · LGBTQ+ · Immigrant Rights · Reproductive Rights · Digital Rights</p>
+
+          {/* Tab bar — horizontally scrollable */}
+          <div style={{ display: "flex", gap: 0, borderBottom: "2px solid rgba(255,255,255,0.1)", overflowX: "auto", WebkitOverflowScrolling: "touch", scrollbarWidth: "none" }}>
+            <style>{`.tabbar::-webkit-scrollbar{display:none}`}</style>
             {tabs.map(t => (
               <button key={t.key} onClick={() => setTab(t.key)} style={{
-                padding: "9px 14px", border: "none", cursor: "pointer", fontWeight: 700, fontSize: 12,
+                padding: "9px 13px", border: "none", cursor: "pointer", fontWeight: 700, fontSize: 12,
                 background: "transparent", color: tab === t.key ? "#FFF" : "#5A7FAA",
                 borderBottom: tab === t.key ? "2px solid #4DADA3" : "2px solid transparent",
-                marginBottom: -2, transition: "all 0.15s", whiteSpace: "nowrap"
+                marginBottom: -2, transition: "all 0.15s", whiteSpace: "nowrap", flexShrink: 0
               }}>{t.label}</button>
             ))}
           </div>
@@ -1458,14 +1502,14 @@ export default function App() {
       </div>
 
       {/* ── CONTENT ── */}
-      <div style={{ maxWidth: 820, margin: "0 auto", padding: "18px 20px 32px" }}>
+      <div style={{ maxWidth: 820, margin: "0 auto", padding: "14px 12px 32px" }}>
         {tab === "orgscan" && (
           <OrgScanPanel
             results={orgResults} setResults={setOrgResults}
             savedRoles={savedRoles} setSavedRoles={setSavedRoles}
             adaptiveContext={fullAdaptiveContext}
             learnedOrgs={learnedOrgs} setLearnedOrgs={setLearnedOrgs}
-            orgPerf={orgPerf}
+            orgPerf={orgPerf} signals={signals}
           />
         )}
         {tab === "broader" && (
@@ -1473,16 +1517,16 @@ export default function App() {
             results={broaderResults} setResults={setBroaderResults}
             savedRoles={savedRoles} setSavedRoles={setSavedRoles}
             adaptiveContext={fullAdaptiveContext}
-            broaderPerf={broaderPerf} setLearnedOrgs={setLearnedOrgs}
+            broaderPerf={broaderPerf} setLearnedOrgs={setLearnedOrgs} signals={signals}
           />
         )}
         {tab === "saved" && (
-          <SavedPanel savedRoles={savedRoles} setSavedRoles={setSavedRoles} />
+          <SavedPanel savedRoles={savedRoles} setSavedRoles={setSavedRoles} signals={signals} />
         )}
         {tab === "add" && (
           <AddPostingPanel
             savedRoles={savedRoles} setSavedRoles={setSavedRoles}
-            setSignals={setSignals} setLearnedOrgs={setLearnedOrgs}
+            setSignals={setSignals} setLearnedOrgs={setLearnedOrgs} signals={signals}
           />
         )}
         {tab === "insights" && (
@@ -1497,7 +1541,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v20 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v22 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
