@@ -82,6 +82,8 @@ ANTHROPIC_API_KEY=sk-ant-...
 | v4 | Sep 2026 | City filters, global stats header, scan-all on both panels, simplified row layout, condensed hints, clickable role titles, BucketLab-style header/footer |
 | v5 | Sep 2026 | Supabase backend replacing localStorage — cross-device persistence for saved roles and scan results |
 | v6 | Sep 2026 | Feedback loop (signals → adaptive scan prompts), Add Posting panel (URL decomposition), Insights tab (city/category/relevance analytics), learned orgs tracking, GitHub README |
+| v10 | Sep 2026 | Version alignment (zip = app = footer), learned orgs surface as scannable targets in Org Scan with Learned badge, University of Chicago and user-submitted orgs now appear as scan rows, broader search adapts from signal frequency |
+| v11 | Sep 2026 | Prioritization/deprioritization scoring engine — orgs and broader searches score on starred roles, unstarred results, and empty scans; sources sort hot-to-cold automatically with High yield / Low yield badges (nothing is ever removed); Insights tab gains a Source Performance table; scan prompts now factor in performance history alongside city/category signals |
 
 ---
 
