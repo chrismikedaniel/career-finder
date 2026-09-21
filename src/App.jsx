@@ -108,33 +108,35 @@ async function loadSavedRoles() {
 // ─────────────────────────────────────────────────────────────────────────────
 
 async function fireSignal(role, orgName, source) {
-  try {
-    const city = extractCity(role.location || "");
-    const category = inferCategory(role.title || "", orgName || "");
-    await supabase.from("feedback_signals").upsert({
-      id: `sig-${role.id}`,
-      role_id: role.id,
-      org: orgName || role.org,
-      category,
+  const city = extractCity(role.location || "");
+  const category = inferCategory(role.title || "", orgName || "");
+
+  const { error: sigError } = await supabase.from("feedback_signals").upsert({
+    id: "sig-" + role.id,
+    role_id: role.id,
+    org: orgName || role.org,
+    category,
+    city,
+    relevance: role.relevance || "Medium",
+    source,
+    created_at: new Date().toISOString()
+  });
+  if (sigError) console.error("fireSignal [feedback_signals]:", sigError);
+
+  // If org is not one of the named 16, promote it to learned_orgs
+  const isKnown = TARGET_ORGS.some(o => o.name === orgName || o.fullName === orgName);
+  if (!isKnown && orgName) {
+    const orgKey = "org-" + orgName.toLowerCase().replace(/[^a-z0-9]/g, "-");
+    const { error: orgError } = await supabase.from("learned_orgs").upsert({
+      id: orgKey,
+      name: orgName,
       city,
-      relevance: role.relevance || "Medium",
-      source,
+      category,
+      source_role_id: role.id,
       created_at: new Date().toISOString()
     });
-    // If org came from broader search (not in TARGET_ORGS), promote it
-    const isKnown = TARGET_ORGS.some(o => o.name === orgName || o.fullName === orgName);
-    if (!isKnown && orgName) {
-      const orgKey = "org-" + orgName.toLowerCase().replace(/[^a-z0-9]/g, "-");
-      await supabase.from("learned_orgs").upsert({
-        id: orgKey,
-        name: orgName,
-        city,
-        category,
-        source_role_id: role.id,
-        created_at: new Date().toISOString()
-      });
-    }
-  } catch(e) { console.error("fireSignal:", e); }
+    if (orgError) console.error("fireSignal [learned_orgs]:", orgError);
+  }
 }
 
 function extractCity(location) {
@@ -849,7 +851,7 @@ function SavedPanel({ savedRoles, setSavedRoles }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v14", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v15", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -1381,7 +1383,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v14 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v15 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
