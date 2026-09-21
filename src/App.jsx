@@ -45,11 +45,60 @@ TARGET ROLES: Migrant Rights Advocate, LGBTQ+ Programme Officer, NGO Comms Strat
 
 EXCLUDED: Government policy analyst, Canadian federal GBA+, UK Civil Service, broad human rights spokesperson, US implementing partners, international development.`;
 
+import { supabase } from "./supabase.js";
+
 // ─────────────────────────────────────────────────────────────────────────────
-// STORAGE
+// SUPABASE STORAGE LAYER
 // ─────────────────────────────────────────────────────────────────────────────
-const save = async (key, val) => { try { localStorage.setItem(key, JSON.stringify(val)); } catch(_){} };
-const load = async (key, fb) => { try { const raw = localStorage.getItem(key); return raw ? JSON.parse(raw) : fb; } catch(_){ return fb; } };
+
+async function saveScanResult(id, scanType, result) {
+  try {
+    await supabase.from("scan_results").upsert({
+      id, scan_type: scanType, result,
+      scanned_at: new Date().toISOString()
+    });
+  } catch(e) { console.error("saveScanResult:", e); }
+}
+
+async function loadScanResults(scanType) {
+  try {
+    const { data } = await supabase.from("scan_results").select("*").eq("scan_type", scanType);
+    if (!data) return {};
+    return Object.fromEntries(data.map(row => [row.id, { ...row.result, _ts: new Date(row.scanned_at).getTime() }]));
+  } catch(e) { console.error("loadScanResults:", e); return {}; }
+}
+
+async function upsertRole(role, orgName) {
+  try {
+    await supabase.from("saved_roles").upsert({
+      id: role.id, title: role.title,
+      org: role.org || orgName, org_name: orgName,
+      location: role.location || null, type: role.type || null,
+      relevance: role.relevance || null, deadline: role.deadline || null,
+      why_fit: role.whyFit || null, direct_url: role.directUrl || null,
+      linkedin_url: role.linkedInUrl || null, idealist_url: role.idealistUrl || null,
+      saved_at: new Date().toISOString()
+    });
+  } catch(e) { console.error("upsertRole:", e); }
+}
+
+async function removeRole(id) {
+  try { await supabase.from("saved_roles").delete().eq("id", id); }
+  catch(e) { console.error("removeRole:", e); }
+}
+
+async function loadSavedRoles() {
+  try {
+    const { data } = await supabase.from("saved_roles").select("*").order("saved_at", { ascending: false });
+    if (!data) return {};
+    return Object.fromEntries(data.map(row => [row.id, {
+      id: row.id, title: row.title, org: row.org, orgName: row.org_name,
+      location: row.location, type: row.type, relevance: row.relevance,
+      deadline: row.deadline, whyFit: row.why_fit, directUrl: row.direct_url,
+      linkedInUrl: row.linkedin_url, idealistUrl: row.idealist_url, savedAt: row.saved_at
+    }]));
+  } catch(e) { console.error("loadSavedRoles:", e); return {}; }
+}
 
 // ─────────────────────────────────────────────────────────────────────────────
 // API — real-time web search
@@ -163,12 +212,13 @@ function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles }) {
   );
 
   const handleSave = useCallback(async (roleId, role, orgName, shouldSave) => {
-    const all = await load("bella-saved-v4", {});
-    const updated = shouldSave
-      ? { ...all, [roleId]: { ...role, orgName, savedAt: Date.now() } }
-      : Object.fromEntries(Object.entries(all).filter(([k]) => k !== roleId));
-    setSavedRoles(updated);
-    await save("bella-saved-v4", updated);
+    if (shouldSave) {
+      await upsertRole(role, orgName);
+      setSavedRoles(prev => ({ ...prev, [roleId]: { ...role, orgName, savedAt: new Date().toISOString() } }));
+    } else {
+      await removeRole(roleId);
+      setSavedRoles(prev => { const { [roleId]: _, ...rest } = prev; return rest; });
+    }
   }, [setSavedRoles]);
 
   const scanOrg = async (org) => {
@@ -213,14 +263,14 @@ Return JSON:
       };
       const updated = { ...results, [org.id]: { ...result, _ts: Date.now() } };
       setResults(updated);
-      await save("bella-org-scans-v4", updated);
+      await saveScanResult(org.id, "org", result);
     } catch(e) {
       console.error(e);
       // Save a fallback so the row doesn't reset
       const fallback = { orgId, scannedAt, hiringStatus: "Error", openRoles: [], hiringCycleNote: "Scan error — try again.", _ts: Date.now() };
       const updated = { ...results, [org.id]: fallback };
       setResults(updated);
-      await save("bella-org-scans-v4", updated);
+      await saveScanResult(org.id, "org", fallback);
     }
     setScanning(p => ({ ...p, [org.id]: false }));
   };
@@ -340,12 +390,13 @@ function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles }) 
   );
 
   const handleSave = useCallback(async (roleId, role, orgName, shouldSave) => {
-    const all = await load("bella-saved-v4", {});
-    const updated = shouldSave
-      ? { ...all, [roleId]: { ...role, orgName, savedAt: Date.now() } }
-      : Object.fromEntries(Object.entries(all).filter(([k]) => k !== roleId));
-    setSavedRoles(updated);
-    await save("bella-saved-v4", updated);
+    if (shouldSave) {
+      await upsertRole(role, orgName);
+      setSavedRoles(prev => ({ ...prev, [roleId]: { ...role, orgName, savedAt: new Date().toISOString() } }));
+    } else {
+      await removeRole(roleId);
+      setSavedRoles(prev => { const { [roleId]: _, ...rest } = prev; return rest; });
+    }
   }, [setSavedRoles]);
 
   const runSearch = async (search) => {
@@ -388,13 +439,13 @@ Return JSON:
       };
       const updated = { ...results, [search.id]: { ...result, _ts: Date.now() } };
       setResults(updated);
-      await save("bella-broader-v4", updated);
+      await saveScanResult(search.id, "broader", result);
     } catch(e) {
       console.error(e);
       const fallback = { searchId, runAt, marketNote: "Search error — try again.", topRoles: [], _ts: Date.now() };
       const updated = { ...results, [search.id]: fallback };
       setResults(updated);
-      await save("bella-broader-v4", updated);
+      await saveScanResult(search.id, "broader", fallback);
     }
     setRunning(p => ({ ...p, [search.id]: false }));
   };
@@ -591,11 +642,9 @@ function SavedPanel({ savedRoles, setSavedRoles }) {
     return (o[a.relevance] ?? 3) - (o[b.relevance] ?? 3);
   });
 
-  const removeRole = useCallback(async (roleId) => {
-    const all = await load("bella-saved-v4", {});
-    const { [roleId]: _, ...rest } = all;
-    setSavedRoles(rest);
-    await save("bella-saved-v4", rest);
+  const handleRemove = useCallback(async (roleId) => {
+    await removeRole(roleId);
+    setSavedRoles(prev => { const { [roleId]: _, ...rest } = prev; return rest; });
   }, [setSavedRoles]);
 
   const handleExport = () => {
@@ -633,14 +682,14 @@ function SavedPanel({ savedRoles, setSavedRoles }) {
       {high.length > 0 && (
         <>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#1E6B3C", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>High Relevance</div>
-          {high.map(r => <SavedRoleRow key={r.id} role={r} onRemove={() => removeRole(r.id)} />)}
+          {high.map(r => <SavedRoleRow key={r.id} role={r} onRemove={() => handleRemove(r.id)} />)}
         </>
       )}
 
       {other.length > 0 && (
         <>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#888", textTransform: "uppercase", letterSpacing: "0.06em", margin: "14px 0 8px" }}>Other Saved</div>
-          {other.map(r => <SavedRoleRow key={r.id} role={r} onRemove={() => removeRole(r.id)} />)}
+          {other.map(r => <SavedRoleRow key={r.id} role={r} onRemove={() => handleRemove(r.id)} />)}
         </>
       )}
 
@@ -663,11 +712,21 @@ export default function App() {
   const [orgResults, setOrgResults] = useState({});
   const [broaderResults, setBroaderResults] = useState({});
   const [savedRoles, setSavedRoles] = useState({});
+  const [loading, setLoading] = useState(true);
 
   useEffect(() => {
-    load("bella-org-scans-v4", {}).then(setOrgResults);
-    load("bella-broader-v4", {}).then(setBroaderResults);
-    load("bella-saved-v4", {}).then(setSavedRoles);
+    async function init() {
+      const [org, broader, saved] = await Promise.all([
+        loadScanResults("org"),
+        loadScanResults("broader"),
+        loadSavedRoles()
+      ]);
+      setOrgResults(org);
+      setBroaderResults(broader);
+      setSavedRoles(saved);
+      setLoading(false);
+    }
+    init();
   }, []);
 
   const stats = useGlobalStats(orgResults, broaderResults, savedRoles);
