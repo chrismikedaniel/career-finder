@@ -290,6 +290,9 @@ function buildPerformanceContext(orgPerf, broaderPerf, orgList, searchList) {
 // ─────────────────────────────────────────────────────────────────────────────
 // API — real-time web search
 // ─────────────────────────────────────────────────────────────────────────────
+let _setApiError = null;
+function registerApiErrorHandler(fn) { _setApiError = fn; }
+
 async function callClaudeJSON(prompt, adaptiveContext = "") {
   const res = await fetch("/.netlify/functions/claude", {
     method: "POST",
@@ -304,9 +307,13 @@ async function callClaudeJSON(prompt, adaptiveContext = "") {
   });
   const data = await res.json();
   if (data.error) {
+    const msg = data.error?.message || "";
+    const isCredits = msg.toLowerCase().includes("credit") || msg.toLowerCase().includes("balance");
+    if (_setApiError) _setApiError(isCredits ? "credits" : "other");
     console.error("Anthropic error:", data.error);
     return null;
   }
+  if (_setApiError) _setApiError(null); // clear on success
   // Extract all text blocks including after tool use
   const blocks = data.content || [];
   const text = blocks.filter(b => b.type === "text").map(b => b.text).join("\n");
@@ -1006,7 +1013,7 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v25", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v26", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -1308,6 +1315,25 @@ Return JSON:
 // ─────────────────────────────────────────────────────────────────────────────
 // INSIGHTS PANEL
 // ─────────────────────────────────────────────────────────────────────────────
+function InsightSection({ title, headline, children, accent = "#1B2A4A", accentBg = "#F0F3F8" }) {
+  return (
+    <div style={{ background: "#FFF", border: "1.5px solid #E4E4E4", borderRadius: 12, overflow: "hidden" }}>
+      <div style={{ background: accentBg, padding: "12px 18px", borderBottom: "1.5px solid #E4E4E4" }}>
+        <div style={{ fontSize: 10, fontWeight: 800, color: accent, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>{title}</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: "#1B2A4A", lineHeight: 1.4 }}>{headline}</div>
+      </div>
+      <div style={{ padding: "14px 18px" }}>{children}</div>
+    </div>
+  );
+}
+
+function InsightTag({ label, color = "#1D6A72", bg = "#E8F4F5" }) {
+  return <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, color, background: bg, padding: "3px 9px", borderRadius: 20, marginRight: 6, marginBottom: 6 }}>{label}</span>;
+}
+
+function directionIcon(d) { return d === "rising" ? "↑" : d === "falling" ? "↓" : "✦"; }
+function directionColor(d) { return d === "rising" ? "#1E6B3C" : d === "falling" ? "#A63228" : "#5B4DB8"; }
+
 function InsightsPanel({ signals, savedRoles, learnedOrgs, orgPerf, broaderPerf }) {
   const [brief, setBrief] = useState(null);       // { profile, changing, nextActions, generatedAt }
   const [loading, setLoading] = useState(false);
@@ -1414,23 +1440,6 @@ Return only valid JSON. No markdown, no preamble.`;
     setLoading(false);
   };
 
-  const Section = ({ title, headline, children, accent = "#1B2A4A", accentBg = "#F0F3F8" }) => (
-    <div style={{ background: "#FFF", border: "1.5px solid #E4E4E4", borderRadius: 12, overflow: "hidden" }}>
-      <div style={{ background: accentBg, padding: "12px 18px", borderBottom: "1.5px solid #E4E4E4" }}>
-        <div style={{ fontSize: 10, fontWeight: 800, color: accent, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>{title}</div>
-        <div style={{ fontSize: 14, fontWeight: 700, color: "#1B2A4A", lineHeight: 1.4 }}>{headline}</div>
-      </div>
-      <div style={{ padding: "14px 18px" }}>{children}</div>
-    </div>
-  );
-
-  const Tag = ({ label, color = "#1D6A72", bg = "#E8F4F5" }) => (
-    <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, color, background: bg, padding: "3px 9px", borderRadius: 20, marginRight: 6, marginBottom: 6 }}>{label}</span>
-  );
-
-  const directionIcon = d => d === "rising" ? "↑" : d === "falling" ? "↓" : "✦";
-  const directionColor = d => d === "rising" ? "#1E6B3C" : d === "falling" ? "#A63228" : "#5B4DB8";
-
   if (!savedList.length && !signals.length) return (
     <div style={{ textAlign: "center", padding: "48px 24px" }}>
       <div style={{ fontSize: 36, marginBottom: 12 }}>🧭</div>
@@ -1468,28 +1477,28 @@ Return only valid JSON. No markdown, no preamble.`;
       {brief && (
         <>
           {/* Profile */}
-          <Section title="Current Profile" headline={brief.profile.headline} accent="#1B2A4A" accentBg="#F0F3F8">
+          <InsightSection title="Current Profile" headline={brief.profile.headline} accent="#1B2A4A" accentBg="#F0F3F8">
             <div style={{ marginBottom: 12 }}>
               <div style={{ fontSize: 10, fontWeight: 800, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Cities</div>
-              {brief.profile.cities.map(c => <Tag key={c} label={c} color="#1D6A72" bg="#E8F4F5" />)}
+              {brief.profile.cities.map(c => <InsightTag key={c} label={c} color="#1D6A72" bg="#E8F4F5" />)}
             </div>
             <div style={{ marginBottom: 12 }}>
               <div style={{ fontSize: 10, fontWeight: 800, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Cause Areas</div>
-              {brief.profile.causes.map(c => <Tag key={c} label={c} color="#5B4DB8" bg="#F0EEFF" />)}
+              {brief.profile.causes.map(c => <InsightTag key={c} label={c} color="#5B4DB8" bg="#F0EEFF" />)}
             </div>
             <div style={{ marginBottom: 12 }}>
               <div style={{ fontSize: 10, fontWeight: 800, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Role Types Landing</div>
-              {brief.profile.roleTypes.map(r => <Tag key={r} label={r} color="#B8732A" bg="#FDF3E3" />)}
+              {brief.profile.roleTypes.map(r => <InsightTag key={r} label={r} color="#B8732A" bg="#FDF3E3" />)}
             </div>
             <div style={{ marginBottom: 14 }}>
               <div style={{ fontSize: 10, fontWeight: 800, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Org Types</div>
-              {brief.profile.orgTypes.map(o => <Tag key={o} label={o} color="#1B2A4A" bg="#F0F3F8" />)}
+              {brief.profile.orgTypes.map(o => <InsightTag key={o} label={o} color="#1B2A4A" bg="#F0F3F8" />)}
             </div>
             <div style={{ fontSize: 13, color: "#444", lineHeight: 1.7, borderTop: "1px solid #F0F0F0", paddingTop: 12 }}>{brief.profile.summary}</div>
-          </Section>
+          </InsightSection>
 
           {/* What's changing */}
-          <Section title="What's Changing" headline={brief.changing.headline} accent="#1E6B3C" accentBg="#EAF4EE">
+          <InsightSection title="What's Changing" headline={brief.changing.headline} accent="#1E6B3C" accentBg="#EAF4EE">
             <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
               {brief.changing.trends.map((t, i) => (
                 <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
@@ -1502,13 +1511,13 @@ Return only valid JSON. No markdown, no preamble.`;
               ))}
             </div>
             <div style={{ fontSize: 13, color: "#444", lineHeight: 1.7, borderTop: "1px solid #F0F0F0", paddingTop: 12 }}>{brief.changing.summary}</div>
-          </Section>
+          </InsightSection>
 
           {/* What the system will do next */}
-          <Section title="What Happens Next" headline={brief.nextActions.headline} accent="#5B4DB8" accentBg="#F0EEFF">
+          <InsightSection title="What Happens Next" headline={brief.nextActions.headline} accent="#5B4DB8" accentBg="#F0EEFF">
             <div style={{ marginBottom: 12 }}>
               <div style={{ fontSize: 10, fontWeight: 800, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Scan Priorities</div>
-              {brief.nextActions.scanPriorities.map(p => <Tag key={p} label={p} color="#5B4DB8" bg="#F0EEFF" />)}
+              {brief.nextActions.scanPriorities.map(p => <InsightTag key={p} label={p} color="#5B4DB8" bg="#F0EEFF" />)}
             </div>
             <div style={{ marginBottom: 12 }}>
               <div style={{ fontSize: 10, fontWeight: 800, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Search Adjustments</div>
@@ -1523,7 +1532,7 @@ Return only valid JSON. No markdown, no preamble.`;
               ))}
             </div>
             <div style={{ fontSize: 13, color: "#444", lineHeight: 1.7, borderTop: "1px solid #F0F0F0", paddingTop: 12 }}>{brief.nextActions.summary}</div>
-          </Section>
+          </InsightSection>
 
           {/* Last updated */}
           <div style={{ textAlign: "center", fontSize: 11, color: "#BBB", paddingBottom: 8 }}>
@@ -1556,8 +1565,10 @@ export default function App() {
   const [signals, setSignals] = useState([]);
   const [learnedOrgs, setLearnedOrgs] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [apiError, setApiError] = useState(null);
 
   useEffect(() => {
+    registerApiErrorHandler(setApiError);
     async function init() {
       const [org, broader, saved, sigs, lorgs] = await Promise.all([
         loadScanResults("org"),
@@ -1612,9 +1623,18 @@ export default function App() {
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
             <img src="/apple-touch-icon.png" alt="logo" style={{ width: 28, height: 28, flexShrink: 0 }}/>
             <h1 style={{ fontSize: 15, fontWeight: 800, color: "#FFF", letterSpacing: "-0.01em", flex: 1, minWidth: 0 }}>Job Posting Discovery Agent</h1>
-            <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
-              <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4DADA3", animation: "spin 3s linear infinite" }} />
-              <span style={{ fontSize: 9, color: "#4DADA3", fontWeight: 700 }}>Live</span>
+            <div
+              title={apiError === "credits" ? "API credits exhausted — top up at console.anthropic.com/settings/billing" : apiError === "other" ? "API error — check console for details" : "Live search active"}
+              style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0, cursor: apiError ? "help" : "default" }}
+            >
+              <div style={{
+                width: 6, height: 6, borderRadius: "50%",
+                background: apiError ? "#A63228" : "#4DADA3",
+                animation: apiError ? "none" : "spin 3s linear infinite"
+              }} />
+              <span style={{ fontSize: 9, fontWeight: 700, color: apiError ? "#E57373" : "#4DADA3" }}>
+                {apiError === "credits" ? "No credits" : apiError === "other" ? "API error" : "Live"}
+              </span>
             </div>
           </div>
 
@@ -1690,7 +1710,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v25 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v26 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
