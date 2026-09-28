@@ -23,20 +23,20 @@ const TARGET_ORGS = [
 ];
 
 const BROADER_SEARCHES = [
-  { id:"toronto-nonprofit",    label:"Toronto — Nonprofit Advocacy",          city:"Toronto",  category:"Advocacy / Policy",        query:"advocacy coordinator gender equity immigration rights Toronto nonprofit 2026",                              hint:"Entry-level coordinator and associate roles; U of T DTS alumni network is the referral path" },
-  { id:"chicago-nonprofit",    label:"Chicago — Nonprofit & Advocacy",        city:"Chicago",  category:"Advocacy / Policy",        query:"advocate coordinator immigration policy equity rights nonprofit Chicago entry level 2026",                   hint:"Immigrant rights and equity orgs; Spanish fluency and Chicago community roots are differentiators" },
-  { id:"lgbtq-toronto-chicago",label:"Toronto & Chicago — LGBTQ+ Orgs",      city:"Multiple", category:"LGBTQ+",                   query:"LGBTQ programme coordinator communications advocacy Toronto Chicago entry level 2026",                       hint:"519 Community Centre (Toronto) and Howard Brown Health (Chicago) are the anchor employers beyond the list" },
+  { id:"toronto-nonprofit",    label:"Toronto — Nonprofit Advocacy",          city:"Toronto",  category:"Advocacy / Policy",        query:"advocacy coordinator immigrant rights gender equity community Toronto nonprofit 2026",   hint:"Entry-level coordinator roles — UofT DTS alumni network is the referral path; target Centretown and Parkdale neighbourhood orgs" },
+  { id:"chicago-nonprofit",    label:"Chicago — Nonprofit & Advocacy",        city:"Chicago",  category:"Advocacy / Policy",        query:"community advocate coordinator immigration equity rights Chicago nonprofit Spanish bilingual 2026", hint:"Immigrant rights and equity orgs — Spanish fluency and Chicago community roots are key differentiators; target pillar organizations not legal clinics" },
+  { id:"lgbtq-toronto-chicago",label:"Toronto & Chicago — LGBTQ+ Orgs",      city:"Multiple", category:"LGBTQ+",                   query:"LGBTQ coordinator communications advocacy Toronto Chicago nonprofit community 2026", hint:"Focus on community-embedded orgs — 519 Community Centre, Rainbow Health Ontario, Howard Brown Health, Gender Creative Kids; avoid legal-only roles" },
   { id:"repro-rights",         label:"US & Canada — Reproductive Rights",     city:"Multiple", category:"Reproductive Rights",      query:"reproductive rights sexual health advocacy coordinator communications researcher 2026",                        hint:"Planned Parenthood of Illinois is a strong Chicago target; NCRW aggregates women's org postings nationally" },
   { id:"edu-chicago",          label:"Chicago — Educational Institutions",    city:"Chicago",  category:"Education",                query:"DePaul Loyola Northwestern equity diversity inclusion community engagement coordinator Chicago 2026",            hint:"Loyola Chicago has strong social justice programming; name the Vincentian/Jesuit mission in applications" },
   { id:"digital-rights",       label:"Remote — Digital Rights / PIT",         city:"Remote",   category:"Digital Rights / Tech",    query:"public interest technology fellow researcher digital rights equity remote fellowship 2026",                    hint:"Tech Jobs for Good has less competition per listing than LinkedIn; Mozilla is location-flexible" },
   { id:"uk-charity",           label:"London — UK Charity Sector",            city:"London",   category:"LGBTQ+ / Advocacy",        query:"LGBTQ gender policy coordinator communications charity London entry level 2026",                            hint:"CharityJob UK is the primary board here; many smaller LGBTQ+ orgs only post there" },
   { id:"nyc-nonprofit",        label:"New York — Nonprofit & Advocacy",       city:"New York", category:"Advocacy / Policy",        query:"policy researcher advocacy communications coordinator nonprofit New York entry level 2026",                    hint:"Defer to second role unless friends' NYC network has solidified; remote roles here are the priority" },
   { id:"chicago-lgbtq",        label:"Chicago — LGBTQ+ Orgs",                city:"Chicago",  category:"LGBTQ+",                   query:"LGBTQ coordinator programs communications advocacy Chicago nonprofit entry level 2026",                       hint:"Howard Brown Health, Center on Halsted, PFLAG Chicago — Spanish fluency is a differentiator for bilingual outreach roles" },
-  { id:"chicago-repro",        label:"Chicago — Reproductive Rights",         city:"Chicago",  category:"Reproductive Rights",      query:"reproductive rights sexual health advocacy coordinator communications Chicago Illinois entry level 2026",       hint:"Planned Parenthood of Illinois and Illinois Caucus for Adolescent Health are primary Chicago targets" },
-  { id:"chicago-university",   label:"Chicago — University & Research Roles", city:"Chicago",  category:"Education / Research",     query:"program coordinator community engagement research associate university Chicago equity inclusion 2026",           hint:"UChicago Pozen Center, Loyola, DePaul — target human rights, gender studies, and community engagement departments" },
-  { id:"chicago-immigrant",    label:"Chicago — Immigrant & Refugee Services",city:"Chicago",  category:"Migrant Rights",           query:"immigrant refugee services coordinator advocate outreach Chicago bilingual Spanish nonprofit 2026",              hint:"Heartland Alliance, Interfaith Action, Resurrection Project — Spanish fluency opens bilingual outreach roles" },
-  { id:"toronto-lgbtq",        label:"Toronto — LGBTQ+ & Gender Equity",      city:"Toronto",  category:"LGBTQ+",                   query:"LGBTQ gender equity coordinator communications advocacy Toronto nonprofit entry level 2026",                   hint:"519 Community Centre, Rainbow Health Ontario, Egale Canada — UofT DTS network is the referral path" },
-  { id:"toronto-immigrant",    label:"Toronto — Immigrant & Settlement Services",city:"Toronto",category:"Migrant Rights",           query:"immigrant settlement services coordinator advocate outreach Toronto bilingual Spanish 2026",                    hint:"ACCES Employment, Catholic Crosscultural Services, COSTI — DTS BA and Spanish fluency are direct credentials" },
+  { id:"chicago-repro",        label:"Chicago — Reproductive Rights",         city:"Chicago",  category:"Reproductive Rights",      query:"reproductive rights sexual health coordinator advocacy communications Chicago Illinois 2026",       hint:"Planned Parenthood of Illinois and Illinois Caucus for Adolescent Health are primary Chicago targets" },
+  { id:"chicago-university",   label:"Chicago — University & Research Roles", city:"Chicago",  category:"Education / Research",     query:"program coordinator human rights gender studies Chicago university DePaul Loyola UChicago 2026",           hint:"UChicago Pozen Center, Loyola, DePaul — target human rights, gender studies, and community engagement departments" },
+  { id:"chicago-immigrant",    label:"Chicago — Immigrant & Refugee Services",city:"Chicago",  category:"Migrant Rights",           query:"immigrant refugee coordinator outreach advocacy Chicago bilingual Spanish nonprofit 2026",              hint:"Heartland Alliance, Interfaith Action, Resurrection Project — Spanish fluency opens bilingual outreach roles" },
+  { id:"toronto-lgbtq",        label:"Toronto — LGBTQ+ & Gender Equity",      city:"Toronto",  category:"LGBTQ+",                   query:"LGBTQ gender equity coordinator communications Toronto nonprofit 2026",                   hint:"519 Community Centre, Rainbow Health Ontario, Egale Canada — UofT DTS network is the referral path" },
+  { id:"toronto-immigrant",    label:"Toronto — Immigrant & Settlement Services",city:"Toronto",category:"Migrant Rights",           query:"immigrant settlement coordinator outreach Toronto bilingual Spanish nonprofit 2026",                    hint:"ACCES Employment, Catholic Crosscultural Services, COSTI — DTS BA and Spanish fluency are direct credentials" },
 ];
 
 const CITIES = ["All", "Chicago", "Toronto", "New York", "London", "Remote", "Multiple"];
@@ -879,7 +879,20 @@ function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, ad
     const runAt = new Date().toISOString();
     const liUrl = "https://www.linkedin.com/jobs/search/?keywords=" + encodeURIComponent(search.query.split(" ").slice(0, 5).join("+"));
     const idUrl = "https://www.idealist.org/en/jobs?q=" + encodeURIComponent(search.query.split(" ").slice(0, 4).join("+"));
-    const prompt = `Search the web NOW for current job openings: "${search.query}". Find REAL postings on Idealist, LinkedIn, Charity Village, and org websites. Only include roles outside the 16 named target orgs (ICIRR, Stonewall, Guttmacher, Action Canada, CCPA, PEN America, AKT, NIJC, Mozilla, MacArthur, YWCA Toronto, DePaul, AI Now, The 19th, CRR, Open Rights Group). Do not invent roles.
+    // Split query into keyword clusters for multi-angle searching
+    const queryTerms = search.query.split(" ").filter(Boolean);
+    const angle1 = queryTerms.slice(0, 5).join(" ");
+    const angle2 = queryTerms.slice(0, 3).join(" ") + " " + (search.city !== "Multiple" ? search.city : "");
+    const angle3 = search.hint ? search.hint.split("—")[0].trim().split(",")[0].trim() : angle1;
+
+    const prompt = `Search the web NOW for current job openings matching this theme: ${search.query}.
+
+Search using MULTIPLE angles — try at least 3 different searches:
+1. "${angle1}"
+2. "${angle2.trim()}" site:linkedin.com OR site:idealist.org OR site:charityvillage.com
+3. Specific orgs mentioned in this hint: "${search.hint || angle3}"
+
+Find REAL postings on LinkedIn Jobs, Idealist, Charity Village, Indeed, and org career pages directly. Cast a wide net — include any role that matches the category even if the title varies. Only exclude roles from these 16 already-scanned orgs: ICIRR, Stonewall, Guttmacher, Action Canada, CCPA, PEN America, AKT, NIJC, Mozilla, MacArthur, YWCA Toronto, DePaul, AI Now, The 19th, CRR, Open Rights Group. Do not invent roles — only report what you actually find.
 
 Return JSON:
 {
@@ -1136,7 +1149,7 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v36", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v38", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -2084,7 +2097,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v36 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v38 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
