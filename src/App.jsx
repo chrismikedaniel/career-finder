@@ -31,6 +31,12 @@ const BROADER_SEARCHES = [
   { id:"digital-rights",       label:"Remote — Digital Rights / PIT",         city:"Remote",   category:"Digital Rights / Tech",    query:"public interest technology fellow researcher digital rights equity remote fellowship 2026",                    hint:"Tech Jobs for Good has less competition per listing than LinkedIn; Mozilla is location-flexible" },
   { id:"uk-charity",           label:"London — UK Charity Sector",            city:"London",   category:"LGBTQ+ / Advocacy",        query:"LGBTQ gender policy coordinator communications charity London entry level 2026",                            hint:"CharityJob UK is the primary board here; many smaller LGBTQ+ orgs only post there" },
   { id:"nyc-nonprofit",        label:"New York — Nonprofit & Advocacy",       city:"New York", category:"Advocacy / Policy",        query:"policy researcher advocacy communications coordinator nonprofit New York entry level 2026",                    hint:"Defer to second role unless friends' NYC network has solidified; remote roles here are the priority" },
+  { id:"chicago-lgbtq",        label:"Chicago — LGBTQ+ Orgs",                city:"Chicago",  category:"LGBTQ+",                   query:"LGBTQ coordinator programs communications advocacy Chicago nonprofit entry level 2026",                       hint:"Howard Brown Health, Center on Halsted, PFLAG Chicago — Spanish fluency is a differentiator for bilingual outreach roles" },
+  { id:"chicago-repro",        label:"Chicago — Reproductive Rights",         city:"Chicago",  category:"Reproductive Rights",      query:"reproductive rights sexual health advocacy coordinator communications Chicago Illinois entry level 2026",       hint:"Planned Parenthood of Illinois and Illinois Caucus for Adolescent Health are primary Chicago targets" },
+  { id:"chicago-university",   label:"Chicago — University & Research Roles", city:"Chicago",  category:"Education / Research",     query:"program coordinator community engagement research associate university Chicago equity inclusion 2026",           hint:"UChicago Pozen Center, Loyola, DePaul — target human rights, gender studies, and community engagement departments" },
+  { id:"chicago-immigrant",    label:"Chicago — Immigrant & Refugee Services",city:"Chicago",  category:"Migrant Rights",           query:"immigrant refugee services coordinator advocate outreach Chicago bilingual Spanish nonprofit 2026",              hint:"Heartland Alliance, Interfaith Action, Resurrection Project — Spanish fluency opens bilingual outreach roles" },
+  { id:"toronto-lgbtq",        label:"Toronto — LGBTQ+ & Gender Equity",      city:"Toronto",  category:"LGBTQ+",                   query:"LGBTQ gender equity coordinator communications advocacy Toronto nonprofit entry level 2026",                   hint:"519 Community Centre, Rainbow Health Ontario, Egale Canada — UofT DTS network is the referral path" },
+  { id:"toronto-immigrant",    label:"Toronto — Immigrant & Settlement Services",city:"Toronto",category:"Migrant Rights",           query:"immigrant settlement services coordinator advocate outreach Toronto bilingual Spanish 2026",                    hint:"ACCES Employment, Catholic Crosscultural Services, COSTI — DTS BA and Spanish fluency are direct credentials" },
 ];
 
 const CITIES = ["All", "Chicago", "Toronto", "New York", "London", "Remote", "Multiple"];
@@ -1130,7 +1136,7 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v35", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v36", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -1649,7 +1655,7 @@ Based on all of this, generate a concise strategic brief in exactly this JSON st
 Also add these arrays to nextActions:
 - "newOrgs": up to 5 specific org names NOT already in Bella's scan list but clearly belonging given her profile and signals. Name the actual org, not a category.
 - "learnedSearches": up to 4 NEW broader search rows to create based on gaps and thumb signals. Each must have: { "id": "unique-slug", "label": "City — Category Description", "city": "city name", "category": "category", "query": "specific search query string for job boards", "hint": "one-line hint for the operator" }. Create these when thumb down signals or empty scans reveal gaps, or when thumb up signals show a category worth doubling down on that has no dedicated search yet.
-- "searchUpdates": up to 4 UPDATES to existing broader searches (by id from this list: toronto-nonprofit, chicago-nonprofit, lgbtq-toronto-chicago, repro-rights, edu-chicago, digital-rights, uk-charity, nyc-nonprofit). Each must have: { "id": "existing-search-id", "query": "updated search query", "hint": "updated hint" }. Update when thumb down notes reveal the current query is too broad or off-target, or when thumb up patterns suggest a tighter angle.
+- "searchUpdates": up to 4 UPDATES to existing broader searches (by id from this list: toronto-nonprofit, chicago-nonprofit, lgbtq-toronto-chicago, repro-rights, edu-chicago, digital-rights, uk-charity, nyc-nonprofit, chicago-lgbtq, chicago-repro, chicago-university, chicago-immigrant, toronto-lgbtq, toronto-immigrant). Each must have: { "id": "existing-search-id", "query": "updated search query", "hint": "updated hint" }. Update when thumb down notes reveal the current query is too broad or off-target, or when thumb up patterns suggest a tighter angle.
 
 Thumb down signals and their notes are the strongest signal for searchUpdates — if someone thumbed down roles with a note like "too corporate" or "not mission-driven", tighten the query to exclude those patterns.
 
@@ -2078,7 +2084,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v35 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v36 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
