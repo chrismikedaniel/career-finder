@@ -334,8 +334,8 @@ async function callClaudePure(prompt) {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        model: "claude-sonnet-4-6",
-        max_tokens: 4000,
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 3000,
         messages: [{ role: "user", content: prompt }]
       })
     });
@@ -1082,7 +1082,7 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v30", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v32", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -1202,15 +1202,42 @@ Return JSON:
 
   const handleManualSave = async () => {
     if (!manual.title || !manual.org) return;
+    setStatus("loading");
     const roleId = "user-" + Date.now();
+
+    // Assess fit via Claude if a description was provided
+    let whyFit = null;
+    let relevance = "Medium";
+    if (manual.description.trim()) {
+      const assessPrompt = `You are assessing job fit for Bella Daniel-Hunsicker. She has an MSc in Gender/Sexuality Studies from LSE (Sep 2026) and a BA in Diaspora & Transnational Studies from UofT. She works FROM WITHIN communities. Causes: LGBTQ+ rights, immigrant rights, reproductive rights, digital rights. Cities: Toronto (primary), Chicago (second). No government roles.
+
+Role: ${manual.title}
+Organisation: ${manual.org}
+Location: ${manual.location || "Unknown"}
+Description: ${manual.description}
+
+Return JSON only:
+{
+  "relevance": "High or Medium or Low",
+  "whyFit": "1-2 sentences on why this fits Bella specifically — reference her LSE MSc, PEN Canada, DTS BA, Spanish, Chicago/Toronto connections. Be specific."
+}`;
+      try {
+        const assessment = await callClaudePure(assessPrompt);
+        if (assessment?.whyFit) {
+          whyFit = assessment.whyFit;
+          relevance = assessment.relevance || "Medium";
+        }
+      } catch(e) { console.error("fit assessment failed:", e); }
+    }
+
     const role = {
       id: roleId,
       title: manual.title,
       org: manual.org,
       location: manual.location || "Unknown",
       type: manual.type || "Full-time",
-      relevance: "Medium",
-      whyFit: manual.description || null,
+      relevance,
+      whyFit,
       directUrl: url.trim() || null,
       linkedInUrl: null,
       idealistUrl: null,
@@ -1226,6 +1253,7 @@ Return JSON:
       setUrl(""); setManual({ title: "", org: "", location: "", type: "Full-time", description: "" });
       setStatus("idle"); setErrorMsg("");
     } catch(e) {
+      setStatus("manual");
       setErrorMsg("Save failed: " + (e?.message || "database error"));
     }
   };
@@ -1309,19 +1337,21 @@ Return JSON:
                 </select>
               </div>
               <div>
-                <div style={{ fontSize: 10, fontWeight: 700, color: "#666", marginBottom: 3 }}>Description / notes</div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#666", marginBottom: 3 }}>Role description</div>
+                <div style={{ fontSize: 10, color: "#AAA", marginBottom: 4 }}>Paste the job description — Claude will assess fit and generate "Why this fits Bella" automatically.</div>
                 <textarea value={manual.description} onChange={e => setManual(prev => ({ ...prev, description: e.target.value }))}
-                  placeholder="Paste the job description or notes on why this fits Bella…"
-                  rows={4}
+                  placeholder="Paste the full job description here…"
+                  rows={5}
                   style={{ width: "100%", fontSize: 12, padding: "7px 10px", borderRadius: 6, border: "1.5px solid #DDD", fontFamily: "inherit", outline: "none", resize: "vertical" }}
                 />
               </div>
               <div style={{ display: "flex", gap: 8 }}>
-                <button onClick={handleManualSave} disabled={!manual.title || !manual.org}
+                <button onClick={handleManualSave} disabled={!manual.title || !manual.org || status === "loading"}
                   style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none",
                     background: manual.title && manual.org ? "#1E6B3C" : "#CCC",
-                    color: "#FFF", fontSize: 13, fontWeight: 700, cursor: manual.title && manual.org ? "pointer" : "default" }}>
-                  ★ Save to Roles
+                    color: "#FFF", fontSize: 13, fontWeight: 700, cursor: manual.title && manual.org ? "pointer" : "default",
+                    display: "flex", alignItems: "center", justifyContent: "center", gap: 6 }}>
+                  {status === "loading" ? <><Spinner size={13} color="#FFF" /><span>Assessing fit…</span></> : "★ Save to Roles"}
                 </button>
                 <button onClick={() => { setStatus("idle"); setErrorMsg(""); setManual({ title: "", org: "", location: "", type: "Full-time", description: "" }); }}
                   style={{ padding: "10px 16px", borderRadius: 8, border: "1.5px solid #DDD", background: "#FFF", color: "#888", fontSize: 13, cursor: "pointer" }}>
@@ -1406,7 +1436,7 @@ Return JSON:
               </select>
             </div>
             <div>
-              <div style={{ fontSize: 10, fontWeight: 700, color: "#666", marginBottom: 3 }}>Notes / why it fits</div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#666", marginBottom: 3 }}>Role description</div>
               <textarea value={manual.description} onChange={e => setManual(prev => ({ ...prev, description: e.target.value }))}
                 rows={3} style={{ width: "100%", fontSize: 12, padding: "7px 10px", borderRadius: 6, border: "1.5px solid #DDD", fontFamily: "inherit", outline: "none", resize: "vertical" }} />
             </div>
@@ -1494,9 +1524,15 @@ function InsightsPanel({ signals, savedRoles, learnedOrgs, setLearnedOrgs, orgPe
       if (s.notes) notes.push(s.notes);
     });
 
-    // Build compact text summaries instead of raw JSON to keep prompt lean
-    const savedLines = savedList.slice(0, 20).map(r =>
-      `- ${r.title} @ ${r.orgName || r.org} (${r.relevance || "?"}, ${r.source === "user_submitted" ? "user-added" : "starred"})`
+    // Build compact text summaries — group by org to keep prompt lean
+    const orgGroups = {};
+    savedList.forEach(r => {
+      const org = r.orgName || r.org || "Unknown";
+      if (!orgGroups[org]) orgGroups[org] = [];
+      orgGroups[org].push(r.title);
+    });
+    const savedLines = Object.entries(orgGroups).map(([org, titles]) =>
+      `- ${org}: ${titles.join(", ")}`
     ).join("\n");
 
     const orgPerfLines = Object.entries(orgPerf || {}).map(([id, p]) => {
@@ -1937,7 +1973,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v30 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v32 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
