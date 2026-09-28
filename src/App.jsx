@@ -705,12 +705,19 @@ function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptive
     const careersHint = org.careersUrl && !org.careersUrl.includes("google.com/search")
       ? `Start by checking their known careers page: ${org.careersUrl}. `
       : "";
-    const prompt = `Search the web NOW for CURRENT job openings at ${org.fullName} in ${org.city}. ${careersHint}Also search: "${org.fullName} jobs 2026" and "${org.fullName} careers openings". Only report roles actually found with real application URLs — do not invent openings.
+    const prompt = `Search the web NOW for CURRENT job openings at ${org.fullName}. ${careersHint}
 
-IMPORTANT URL RULES:
-- directUrl must be a link to the SPECIFIC JOB POSTING (e.g. a Workday, Greenhouse, Lever, or org careers page URL), never a LinkedIn company profile URL
-- linkedInUrl must be a LinkedIn JOBS search URL (like ${liUrl}), never a company profile page
-- If you cannot find a direct posting URL, leave directUrl as null
+Search these sources:
+1. ${org.fullName} careers page directly
+2. "${org.fullName} jobs" on Indeed or LinkedIn
+3. "${org.name} hiring 2026"
+
+Be inclusive — include any open role at this org regardless of exact title. Coordinator, Associate, Specialist, Officer, Manager all count. If the org has a careers page, check it directly.
+
+URL RULES:
+- directUrl = specific job posting URL (Workday/Greenhouse/Lever/org site), never a LinkedIn company profile
+- linkedInUrl = LinkedIn jobs search URL like ${liUrl}
+- If no direct URL found, set directUrl to null
 
 Return JSON:
 {
@@ -735,7 +742,7 @@ Return JSON:
   "hiringCycleNote": "One sentence on hiring cycle or upcoming openings"
 }`;
     try {
-      const data = await callClaudeJSON(prompt, adaptiveContext);
+      const data = await callClaudeHaikuSearch(prompt, adaptiveContext);
       // Always save — even empty result — so timestamp persists
       const result = data || {
         orgId,
@@ -1196,7 +1203,7 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v40", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v41", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -2144,7 +2151,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v40 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v41 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
