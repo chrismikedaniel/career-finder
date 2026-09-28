@@ -217,6 +217,23 @@ async function loadLearnedOrgs() {
   } catch(e) { console.error("loadLearnedOrgs:", e); return []; }
 }
 
+async function loadLearnedSearches() {
+  try {
+    const { data } = await supabase.from("learned_searches").select("*").order("created_at", { ascending: false });
+    return data || [];
+  } catch(e) { console.error("loadLearnedSearches:", e); return []; }
+}
+
+async function saveLearnedSearch(search) {
+  const { error } = await supabase.from("learned_searches").upsert(search);
+  if (error) console.error("saveLearnedSearch:", error);
+}
+
+async function updateLearnedSearch(id, updates) {
+  const { error } = await supabase.from("learned_searches").update(updates).eq("id", id);
+  if (error) console.error("updateLearnedSearch:", error);
+}
+
 async function saveBrief(brief, signalCount, roleCount) {
   const id = "brief-" + Date.now();
   const { error } = await supabase.from("insights_briefs").insert({
@@ -273,6 +290,9 @@ function buildAdaptiveContext(signals, latestBrief) {
     if (na.gaps?.length) ctx += ` Identified gaps to explore: ${na.gaps.join("; ")} — flag roles in these areas as High relevance.`;
     if (latestBrief.profile?.causes?.length) ctx += ` Current cause focus: ${latestBrief.profile.causes.slice(0,3).join(", ")}.`;
     if (latestBrief.profile?.roleTypes?.length) ctx += ` Role types landing: ${latestBrief.profile.roleTypes.slice(0,3).join(", ")}.`;
+    // Thumb down notes drive query tightening
+    const downNotes = thumbDownOrgs.length ? `Thumb-down orgs to deprioritize: ${[...new Set(thumbDownOrgs)].join(", ")}.` : "";
+    if (downNotes) ctx += ` ${downNotes}`;
   }
 
   return ctx;
@@ -807,21 +827,34 @@ Return JSON:
 // ─────────────────────────────────────────────────────────────────────────────
 // BROADER SEARCH PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, broaderPerf, setLearnedOrgs, signals }) {
+function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, broaderPerf, setLearnedOrgs, signals, learnedSearches }) {
   const [running, setRunning] = useState({});
   const [cityFilter, setCityFilter] = useState("All");
   const [runningAll, setRunningAll] = useState(false);
 
-  const filteredUnsorted = BROADER_SEARCHES.filter(s =>
-    cityFilter === "All" || s.city === cityFilter || s.city.includes(cityFilter)
+  // Merge hardcoded + learned searches (deduped by id)
+  const hardcodedIds = new Set(BROADER_SEARCHES.map(s => s.id));
+  const learnedRows = (learnedSearches || [])
+    .filter(ls => !hardcodedIds.has(ls.id))
+    .map(ls => ({ ...ls, isLearned: true }));
+  const allSearches = [...BROADER_SEARCHES, ...learnedRows];
+
+  const allCities = ["All", ...Array.from(new Set(allSearches.map(s => s.city?.split(" / ")?.[0] || s.city).filter(Boolean)))];
+
+  const filteredUnsorted = allSearches.filter(s =>
+    cityFilter === "All" || s.city === cityFilter || s.city?.includes(cityFilter)
   );
 
-  // Sort: hot (high yield) first, cold (low yield) last
-  const filtered = [...filteredUnsorted].sort((a, b) => {
-    const scoreA = broaderPerf?.[a.id]?.score ?? 0;
-    const scoreB = broaderPerf?.[b.id]?.score ?? 0;
-    return scoreB - scoreA;
-  });
+  // Sort: hot first, learned (unscanned) second, neutral, cold last
+  const sortRank = (s) => {
+    const perf = broaderPerf?.[s.id];
+    const score = perf?.score ?? null;
+    if (score !== null && perfBucket(score) === "hot") return 3;
+    if (s.isLearned && (score === null || perf?.scans === 0)) return 2;
+    if (score === null || perfBucket(score) === "neutral") return 1;
+    return 0;
+  };
+  const filtered = [...filteredUnsorted].sort((a, b) => sortRank(b) - sortRank(a));
 
   const handleSave = useCallback(async (roleId, role, orgName, shouldSave) => {
     if (shouldSave) {
@@ -928,6 +961,7 @@ Return JSON:
               <div style={{ flex: 1, minWidth: 0 }}>
                 <div style={{ display: "flex", alignItems: "center", gap: 6, flexWrap: "wrap" }}>
                   <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A" }}>{search.label}</div>
+                  {search.isLearned && <span style={{ fontSize: 9, fontWeight: 800, color: "#5B4DB8", background: "#F0EEFF", padding: "1px 6px", borderRadius: 4, textTransform: "uppercase", letterSpacing: "0.06em" }}>Learned</span>}
                   {(() => {
                     const p = broaderPerf?.[search.id];
                     if (!p || p.scans === 0) return null;
@@ -1096,7 +1130,7 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v34", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v35", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -1501,7 +1535,7 @@ function InsightTag({ label, color = "#1D6A72", bg = "#E8F4F5" }) {
 function directionIcon(d) { return d === "rising" ? "↑" : d === "falling" ? "↓" : "✦"; }
 function directionColor(d) { return d === "rising" ? "#1E6B3C" : d === "falling" ? "#A63228" : "#5B4DB8"; }
 
-function InsightsPanel({ signals, savedRoles, learnedOrgs, setLearnedOrgs, orgPerf, broaderPerf, briefs, setBriefs }) {
+function InsightsPanel({ signals, savedRoles, learnedOrgs, setLearnedOrgs, orgPerf, broaderPerf, briefs, setBriefs, learnedSearches, setLearnedSearches }) {
   const latestSaved = briefs?.[0] || null;
   const [brief, setBrief] = useState(latestSaved ? { ...latestSaved.content, generatedAt: latestSaved.created_at, id: latestSaved.id } : null);
   const [loading, setLoading] = useState(false);
@@ -1612,7 +1646,12 @@ Based on all of this, generate a concise strategic brief in exactly this JSON st
   }
 }
 
-Also add a "newOrgs" array to nextActions — up to 5 specific org names that are NOT already in Bella's scan list but clearly belong given her profile and current signals. Be specific: name the actual org, not a category.
+Also add these arrays to nextActions:
+- "newOrgs": up to 5 specific org names NOT already in Bella's scan list but clearly belonging given her profile and signals. Name the actual org, not a category.
+- "learnedSearches": up to 4 NEW broader search rows to create based on gaps and thumb signals. Each must have: { "id": "unique-slug", "label": "City — Category Description", "city": "city name", "category": "category", "query": "specific search query string for job boards", "hint": "one-line hint for the operator" }. Create these when thumb down signals or empty scans reveal gaps, or when thumb up signals show a category worth doubling down on that has no dedicated search yet.
+- "searchUpdates": up to 4 UPDATES to existing broader searches (by id from this list: toronto-nonprofit, chicago-nonprofit, lgbtq-toronto-chicago, repro-rights, edu-chicago, digital-rights, uk-charity, nyc-nonprofit). Each must have: { "id": "existing-search-id", "query": "updated search query", "hint": "updated hint" }. Update when thumb down notes reveal the current query is too broad or off-target, or when thumb up patterns suggest a tighter angle.
+
+Thumb down signals and their notes are the strongest signal for searchUpdates — if someone thumbed down roles with a note like "too corporate" or "not mission-driven", tighten the query to exclude those patterns.
 
 Return only valid JSON. No markdown, no preamble.`;
 
@@ -1639,6 +1678,36 @@ Return only valid JSON. No markdown, no preamble.`;
         }
         // Reload learned orgs if new ones were added
         if (newOrgs.length) loadLearnedOrgs().then(orgs => setLearnedOrgs(orgs));
+
+        // Write new learned searches from brief
+        const newSearches = data.nextActions?.learnedSearches || [];
+        for (const search of newSearches) {
+          if (!search?.id || !search?.query) continue;
+          const alreadyHardcoded = ["toronto-nonprofit","chicago-nonprofit","lgbtq-toronto-chicago","repro-rights","edu-chicago","digital-rights","uk-charity","nyc-nonprofit"].includes(search.id);
+          const alreadyLearned = (learnedSearches || []).some(ls => ls.id === search.id);
+          if (!alreadyHardcoded && !alreadyLearned) {
+            await saveLearnedSearch({ ...search, source: "brief", created_at: new Date().toISOString() });
+          }
+        }
+
+        // Apply search query/hint updates to learned_searches table (for dynamic searches)
+        const searchUpdates = data.nextActions?.searchUpdates || [];
+        for (const update of searchUpdates) {
+          if (!update?.id) continue;
+          // Only update if it exists in learned_searches (don't touch hardcoded ones in app)
+          const isLearned = (learnedSearches || []).some(ls => ls.id === update.id);
+          if (isLearned) {
+            await updateLearnedSearch(update.id, {
+              ...(update.query && { query: update.query }),
+              ...(update.hint && { hint: update.hint })
+            });
+          }
+        }
+
+        // Reload learned searches
+        if (newSearches.length || searchUpdates.length) {
+          loadLearnedSearches().then(searches => setLearnedSearches(searches));
+        }
 
         const enriched = { ...data, generatedAt: new Date().toISOString(), id: briefId };
         setBriefs(prev => [{ id: briefId, content: data, created_at: enriched.generatedAt }, ...prev].slice(0, 10));
@@ -1748,6 +1817,23 @@ Return only valid JSON. No markdown, no preamble.`;
             <div style={{ fontSize: 13, color: "#444", lineHeight: 1.7, borderTop: "1px solid #F0F0F0", paddingTop: 12 }}>{brief.nextActions.summary}</div>
           </InsightSection>
 
+          {/* New searches from brief */}
+          {brief?.nextActions?.learnedSearches?.length > 0 && (
+            <div style={{ background: "#E8F4F5", border: "1.5px solid #1D6A72", borderRadius: 12, padding: "14px 18px" }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "#1D6A72", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>New searches added to Broader Search</div>
+              <div style={{ fontSize: 12, color: "#555", lineHeight: 1.6, marginBottom: 8 }}>
+                The brief identified these search gaps — they've been added to your Broader Search list automatically:
+              </div>
+              {brief.nextActions.learnedSearches.map(s => (
+                <div key={s.id} style={{ padding: "6px 0", borderBottom: "1px solid #C8E6EC" }}>
+                  <div style={{ fontSize: 12, fontWeight: 700, color: "#1B2A4A" }}>{s.label}</div>
+                  <div style={{ fontSize: 11, color: "#666" }}>{s.city} · {s.category}</div>
+                  {s.hint && <div style={{ fontSize: 11, color: "#888", marginTop: 2 }}>{s.hint}</div>}
+                </div>
+              ))}
+            </div>
+          )}
+
           {/* New orgs from brief */}
           {brief?.nextActions?.newOrgs?.length > 0 && (
             <div style={{ background: "#F0EEFF", border: "1.5px solid #5B4DB8", borderRadius: 12, padding: "14px 18px" }}>
@@ -1837,19 +1923,21 @@ export default function App() {
   const [signals, setSignals] = useState([]);
   const [learnedOrgs, setLearnedOrgs] = useState([]);
   const [briefs, setBriefs] = useState([]);
+  const [learnedSearches, setLearnedSearches] = useState([]);
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState(null);
 
   useEffect(() => {
     registerApiErrorHandler(setApiError);
     async function init() {
-      const [org, broader, saved, sigs, lorgs, bfs] = await Promise.all([
+      const [org, broader, saved, sigs, lorgs, bfs, lsearches] = await Promise.all([
         loadScanResults("org"),
         loadScanResults("broader"),
         loadSavedRoles(),
         loadFeedbackSignals(),
         loadLearnedOrgs(),
-        loadBriefs()
+        loadBriefs(),
+        loadLearnedSearches()
       ]);
       setOrgResults(org);
       setBroaderResults(broader);
@@ -1857,6 +1945,7 @@ export default function App() {
       setSignals(sigs);
       setLearnedOrgs(lorgs);
       setBriefs(bfs);
+      setLearnedSearches(lsearches);
       setLoading(false);
     }
     init();
@@ -1963,6 +2052,7 @@ export default function App() {
             savedRoles={savedRoles} setSavedRoles={setSavedRoles}
             adaptiveContext={fullAdaptiveContext}
             broaderPerf={broaderPerf} setLearnedOrgs={setLearnedOrgs} signals={signals}
+            learnedSearches={learnedSearches}
           />
         )}
         {tab === "saved" && (
@@ -1980,6 +2070,7 @@ export default function App() {
             learnedOrgs={learnedOrgs} setLearnedOrgs={setLearnedOrgs}
             orgPerf={orgPerf} broaderPerf={broaderPerf}
             briefs={briefs} setBriefs={setBriefs}
+            learnedSearches={learnedSearches} setLearnedSearches={setLearnedSearches}
           />
         )}
       </div>
@@ -1987,7 +2078,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v34 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v35 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
