@@ -467,22 +467,19 @@ function RoleRow({ role, orgName, isSaved, onToggleSave, signals }) {
 // ─────────────────────────────────────────────────────────────────────────────
 // GLOBAL STATS HOOK — shared across panels
 // ─────────────────────────────────────────────────────────────────────────────
-function useGlobalStats(orgResults, broaderResults, savedRoles, learnedOrgs) {
-  const learnedCount = (learnedOrgs || []).length;
-  const orgScanned = TARGET_ORGS.filter(o => orgResults[o.id]).length;
-  const broaderScanned = BROADER_SEARCHES.filter(s => broaderResults[s.id]).length;
-  const totalScanned = orgScanned + broaderScanned;
-  const totalSources = TARGET_ORGS.length + BROADER_SEARCHES.length + learnedCount;
+function useGlobalStats(orgResults, broaderResults, savedRoles, learnedOrgs, orgPerf, broaderPerf) {
+  const savedList = Object.values(savedRoles);
+  const saved = savedList.length;
 
-  const orgRoles = Object.values(orgResults).flatMap(r => r?.openRoles || []);
-  const broaderRoles = Object.values(broaderResults).flatMap(r => r?.topRoles || []);
-  const allRoles = [...orgRoles, ...broaderRoles];
+  // High yield: sources with score >= 4
+  const highYield = Object.values(orgPerf || {}).filter(p => p.score >= 4).length
+    + Object.values(broaderPerf || {}).filter(p => p.score >= 4).length;
 
-  const rolesFound = allRoles.length;
-  const highRelevance = allRoles.filter(r => r.relevance === "High").length;
-  const starred = Object.keys(savedRoles).length;
+  // New this week: roles saved in the last 7 days
+  const oneWeekAgo = Date.now() - 7 * 24 * 60 * 60 * 1000;
+  const newThisWeek = savedList.filter(r => new Date(r.savedAt).getTime() > oneWeekAgo).length;
 
-  return { totalScanned, totalSources, rolesFound, highRelevance, starred };
+  return { saved, highYield, newThisWeek };
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -1009,7 +1006,7 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v22", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v24", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -1069,9 +1066,11 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
 // ─────────────────────────────────────────────────────────────────────────────
 function AddPostingPanel({ savedRoles, setSavedRoles, setSignals, setLearnedOrgs, signals }) {
   const [url, setUrl] = useState("");
-  const [status, setStatus] = useState("idle"); // idle | loading | success | error
+  const [status, setStatus] = useState("idle"); // idle | loading | success | error | manual
   const [result, setResult] = useState(null);
   const [errorMsg, setErrorMsg] = useState("");
+  // Manual entry fallback
+  const [manual, setManual] = useState({ title: "", org: "", location: "", type: "Full-time", description: "" });
 
   const handleDecompose = async () => {
     if (!url.trim()) return;
@@ -1106,12 +1105,46 @@ Return JSON:
         setResult(data);
         setStatus("success");
       } else {
-        setStatus("error");
-        setErrorMsg("Couldn't parse the posting. Try a direct job listing URL.");
+        // Couldn't parse — drop into manual entry with URL pre-filled
+        setManual(prev => ({ ...prev }));
+        setStatus("manual");
+        setErrorMsg("The site blocked automatic analysis. Enter the details manually below.");
       }
     } catch(e) {
-      setStatus("error");
-      setErrorMsg("Something went wrong. Check the URL and try again.");
+      // Blocked or network error — drop into manual entry
+      setManual(prev => ({ ...prev }));
+      setStatus("manual");
+      setErrorMsg("Couldn't reach that URL. Enter the details manually below.");
+    }
+  };
+
+  const handleManualSave = async () => {
+    if (!manual.title || !manual.org) return;
+    const roleId = "user-" + Date.now();
+    const role = {
+      id: roleId,
+      title: manual.title,
+      org: manual.org,
+      location: manual.location || "Unknown",
+      type: manual.type || "Full-time",
+      relevance: "Medium",
+      whyFit: manual.description || null,
+      directUrl: url.trim() || null,
+      linkedInUrl: null,
+      idealistUrl: null,
+      salary: null,
+      deadline: null,
+    };
+    try {
+      await upsertRole(role, manual.org, "user_submitted");
+      setSavedRoles(prev => ({ ...prev, [roleId]: { ...role, orgName: manual.org, savedAt: new Date().toISOString() } }));
+      const [updatedSignals, updatedOrgs] = await Promise.all([loadFeedbackSignals(), loadLearnedOrgs()]);
+      setSignals(updatedSignals);
+      setLearnedOrgs(updatedOrgs);
+      setUrl(""); setManual({ title: "", org: "", location: "", type: "Full-time", description: "" });
+      setStatus("idle"); setErrorMsg("");
+    } catch(e) {
+      setErrorMsg("Save failed: " + (e?.message || "database error"));
     }
   };
 
@@ -1163,10 +1196,64 @@ Return JSON:
         </button>
       </div>
 
-      {/* Error */}
-      {status === "error" && (
-        <div style={{ background: "#FDF0F0", border: "1.5px solid #A63228", borderRadius: 8, padding: "12px 16px", marginBottom: 16, fontSize: 13, color: "#A63228" }}>
-          {errorMsg}
+      {/* Error / Manual fallback */}
+      {(status === "error" || status === "manual") && (
+        <div style={{ background: "#FDF0F0", border: "1.5px solid #A63228", borderRadius: 8, padding: "12px 16px", marginBottom: 16 }}>
+          <div style={{ fontSize: 13, color: "#A63228", fontWeight: 700, marginBottom: 6 }}>
+            {status === "manual" ? "⚠ Couldn't fetch — enter manually" : "⚠ Error"}
+          </div>
+          <div style={{ fontSize: 12, color: "#A63228", marginBottom: status === "manual" ? 12 : 0 }}>{errorMsg}</div>
+
+          {status === "manual" && (
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {[
+                { key: "title", label: "Role title *", placeholder: "e.g. Assistant Director, Programs and Events" },
+                { key: "org",   label: "Organization *", placeholder: "e.g. University of Chicago" },
+                { key: "location", label: "Location", placeholder: "e.g. Chicago, IL" },
+              ].map(f => (
+                <div key={f.key}>
+                  <div style={{ fontSize: 10, fontWeight: 700, color: "#666", marginBottom: 3 }}>{f.label}</div>
+                  <input value={manual[f.key]} onChange={e => setManual(prev => ({ ...prev, [f.key]: e.target.value }))}
+                    placeholder={f.placeholder}
+                    style={{ width: "100%", fontSize: 12, padding: "7px 10px", borderRadius: 6, border: "1.5px solid #DDD", fontFamily: "inherit", outline: "none" }}
+                  />
+                </div>
+              ))}
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#666", marginBottom: 3 }}>Type</div>
+                <select value={manual.type} onChange={e => setManual(prev => ({ ...prev, type: e.target.value }))}
+                  style={{ fontSize: 12, padding: "7px 10px", borderRadius: 6, border: "1.5px solid #DDD", fontFamily: "inherit", background: "#FFF" }}>
+                  {["Full-time","Part-time","Contract","Fellowship"].map(t => <option key={t}>{t}</option>)}
+                </select>
+              </div>
+              <div>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#666", marginBottom: 3 }}>Description / notes</div>
+                <textarea value={manual.description} onChange={e => setManual(prev => ({ ...prev, description: e.target.value }))}
+                  placeholder="Paste the job description or notes on why this fits Bella…"
+                  rows={4}
+                  style={{ width: "100%", fontSize: 12, padding: "7px 10px", borderRadius: 6, border: "1.5px solid #DDD", fontFamily: "inherit", outline: "none", resize: "vertical" }}
+                />
+              </div>
+              <div style={{ display: "flex", gap: 8 }}>
+                <button onClick={handleManualSave} disabled={!manual.title || !manual.org}
+                  style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none",
+                    background: manual.title && manual.org ? "#1E6B3C" : "#CCC",
+                    color: "#FFF", fontSize: 13, fontWeight: 700, cursor: manual.title && manual.org ? "pointer" : "default" }}>
+                  ★ Save to Roles
+                </button>
+                <button onClick={() => { setStatus("idle"); setErrorMsg(""); setManual({ title: "", org: "", location: "", type: "Full-time", description: "" }); }}
+                  style={{ padding: "10px 16px", borderRadius: 8, border: "1.5px solid #DDD", background: "#FFF", color: "#888", fontSize: 13, cursor: "pointer" }}>
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+          {status === "error" && (
+            <button onClick={() => { setStatus("idle"); setErrorMsg(""); }}
+              style={{ marginTop: 4, fontSize: 11, padding: "5px 12px", borderRadius: 6, border: "1.5px solid #DDD", background: "#FFF", cursor: "pointer" }}>
+              Try again
+            </button>
+          )}
         </div>
       )}
 
@@ -1427,7 +1514,7 @@ export default function App() {
   }, []);
 
   const adaptiveContext = buildAdaptiveContext(signals);
-  const stats = useGlobalStats(orgResults, broaderResults, savedRoles, learnedOrgs);
+  const stats = useGlobalStats(orgResults, broaderResults, savedRoles, learnedOrgs, orgPerf, broaderPerf);
 
   const savedRolesList = Object.values(savedRoles);
   const orgPerf = computeSourcePerformance(orgResults, savedRolesList, "org");
@@ -1460,7 +1547,7 @@ export default function App() {
 
           {/* Row 1: logo + title + live dot */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-            <img src="data:image/svg+xml;base64,PHN2ZyB4bWxucz0iaHR0cDovL3d3dy53My5vcmcvMjAwMC9zdmciIHZpZXdCb3g9IjAgMCA2NCA2NCI+CiAgPCEtLSBOYXZ5IGNpcmNsZSAtLT4KICA8Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSIzMCIgZmlsbD0iIzFCMkE0QSIvPgogIDwhLS0gVGVhbCBkYXNoZWQgcmluZyAtLT4KICA8Y2lyY2xlIGN4PSIzMiIgY3k9IjMyIiByPSIyNiIgZmlsbD0ibm9uZSIgc3Ryb2tlPSIjNERBREEzIiBzdHJva2Utd2lkdGg9IjIiIHN0cm9rZS1kYXNoYXJyYXk9IjUgMyIvPgogIDwhLS0gTm9ydGggc3Bpa2UgKHRlYWwsIHRhbGwpIC0tPgogIDxwb2x5Z29uIHBvaW50cz0iMzIsOCAzNiwyNiAzMiwyMiAyOCwyNiIgZmlsbD0iIzREQURBMyIvPgogIDwhLS0gU291dGggbnViIChtdXRlZCkgLS0+CiAgPHBvbHlnb24gcG9pbnRzPSIzMiw1NiAzNSw0MCAzMiw0NCAyOSw0MCIgZmlsbD0iIzVBN0ZBQSIvPgogIDwhLS0gRWFzdCBudWIgLS0+CiAgPHBvbHlnb24gcG9pbnRzPSI1NiwzMiA0MCwyOSA0NCwzMiA0MCwzNSIgZmlsbD0iIzVBN0ZBQSIvPgogIDwhLS0gV2VzdCBudWIgLS0+CiAgPHBvbHlnb24gcG9pbnRzPSI4LDMyIDI0LDM1IDIwLDMyIDI0LDI5IiBmaWxsPSIjNUE3RkFBIi8+CiAgPCEtLSBHb2xkIGNlbnRlciBkb3QgLS0+CiAgPGNpcmNsZSBjeD0iMzIiIGN5PSIzMiIgcj0iNCIgZmlsbD0iI0Y1Qzg0MiIvPgo8L3N2Zz4K" alt="logo" style={{ width: 28, height: 28, flexShrink: 0 }}/>
+            <img src="/apple-touch-icon.png" alt="logo" style={{ width: 28, height: 28, flexShrink: 0 }}/>
             <h1 style={{ fontSize: 15, fontWeight: 800, color: "#FFF", letterSpacing: "-0.01em", flex: 1, minWidth: 0 }}>Job Posting Discovery Agent</h1>
             <div style={{ display: "flex", alignItems: "center", gap: 4, flexShrink: 0 }}>
               <div style={{ width: 6, height: 6, borderRadius: "50%", background: "#4DADA3", animation: "spin 3s linear infinite" }} />
@@ -1471,10 +1558,9 @@ export default function App() {
           {/* Row 2: stats strip */}
           <div style={{ display: "flex", gap: 0, marginBottom: 10, background: "rgba(255,255,255,0.05)", borderRadius: 8, overflow: "hidden" }}>
             {[
-              { label: "Scanned", value: `${stats.totalScanned}/${stats.totalSources}`, color: "#FFF" },
-              { label: "Found", value: stats.rolesFound, color: "#FFF" },
-              { label: "High", value: stats.highRelevance, color: "#4DADA3" },
-              { label: "Starred", value: stats.starred, color: "#F5C842" },
+              { label: "Saved", value: stats.saved, color: "#F5C842" },
+              { label: "High yield", value: stats.highYield, color: "#4DADA3" },
+              { label: "New this week", value: stats.newThisWeek, color: "#FFF" },
             ].map((s, i) => (
               <div key={s.label} style={{ flex: 1, textAlign: "center", padding: "7px 4px", borderLeft: i > 0 ? "1px solid rgba(255,255,255,0.08)" : "none" }}>
                 <div style={{ fontSize: 17, fontWeight: 800, color: s.color, fontFamily: "monospace", lineHeight: 1 }}>{s.value}</div>
@@ -1541,7 +1627,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v22 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v24 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
