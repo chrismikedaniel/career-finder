@@ -408,7 +408,7 @@ async function callClaudeJSON(prompt, adaptiveContext = "") {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       model: "claude-sonnet-4-6",
-      max_tokens: 2000,
+      max_tokens: 3000,
       system: CANDIDATE_CONTEXT + adaptiveContext,
       tools: [{ type: "web_search_20250305", name: "web_search" }],
       messages: [{ role: "user", content: prompt + "\n\nRespond with ONLY valid JSON. Start with { end with }. No markdown fences." }]
@@ -885,14 +885,23 @@ function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, ad
     const angle2 = queryTerms.slice(0, 3).join(" ") + " " + (search.city !== "Multiple" ? search.city : "");
     const angle3 = search.hint ? search.hint.split("—")[0].trim().split(",")[0].trim() : angle1;
 
-    const prompt = `Search the web NOW for current job openings matching this theme: ${search.query}.
+    const prompt = `You are helping find job postings for Bella Daniel-Hunsicker. Search the web right now for current open roles.
 
-Search using MULTIPLE angles — try at least 3 different searches:
-1. "${angle1}"
-2. "${angle2.trim()}" site:linkedin.com OR site:idealist.org OR site:charityvillage.com
-3. Specific orgs mentioned in this hint: "${search.hint || angle3}"
+SEARCH TASK: Find entry-level and coordinator-level job postings for: ${search.query}
+CITY FOCUS: ${search.city}
+OPERATOR HINT: ${search.hint || ""}
 
-Find REAL postings on LinkedIn Jobs, Idealist, Charity Village, Indeed, and org career pages directly. Cast a wide net — include any role that matches the category even if the title varies. Only exclude roles from these 16 already-scanned orgs: ICIRR, Stonewall, Guttmacher, Action Canada, CCPA, PEN America, AKT, NIJC, Mozilla, MacArthur, YWCA Toronto, DePaul, AI Now, The 19th, CRR, Open Rights Group. Do not invent roles — only report what you actually find.
+Do the following searches:
+- Search "${angle1} jobs"
+- Search "${angle2.trim()} careers"  
+- Search "${angle3} jobs hiring 2026"
+- Check LinkedIn Jobs, Idealist.org, Indeed, and the careers pages of specific orgs mentioned in the hint above
+
+IMPORTANT: Be liberal in what you include. A role doesn't need to be a perfect match — if it's in the right city, right cause area, and right level (entry to mid-level), include it. Coordinator, Associate, Specialist, Manager, Officer titles all count. Report everything you find that's plausibly relevant.
+
+Skip only these already-scanned orgs: ICIRR, Stonewall, Guttmacher, Action Canada, CCPA, PEN America, AKT, NIJC, Mozilla, MacArthur, YWCA Toronto, DePaul, AI Now, The 19th, CRR, Open Rights Group.
+
+If you find ANY relevant roles, list them. If search results show job listings on a board, include those too even if you can't verify every detail.
 
 Return JSON:
 {
@@ -1149,7 +1158,7 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v38", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v39", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -2097,7 +2106,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v38 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v39 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
