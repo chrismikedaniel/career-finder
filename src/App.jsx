@@ -290,7 +290,7 @@ function buildPerformanceContext(orgPerf, broaderPerf, orgList, searchList) {
 // ─────────────────────────────────────────────────────────────────────────────
 // API — real-time web search
 // ─────────────────────────────────────────────────────────────────────────────
-let _setApiError = null;
+var _setApiError = null;
 function registerApiErrorHandler(fn) { _setApiError = fn; }
 
 async function callClaudeJSON(prompt, adaptiveContext = "") {
@@ -1013,7 +1013,7 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v26", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v27", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -1588,18 +1588,18 @@ export default function App() {
   }, []);
 
   const adaptiveContext = buildAdaptiveContext(signals);
-  const stats = useGlobalStats(orgResults, broaderResults, savedRoles, learnedOrgs, orgPerf, broaderPerf);
 
   const savedRolesList = Object.values(savedRoles);
   const orgPerf = computeSourcePerformance(orgResults, savedRolesList, "org");
   const broaderPerf = computeSourcePerformance(broaderResults, savedRolesList, "broader");
   const perfContext = buildPerformanceContext(orgPerf, broaderPerf, TARGET_ORGS, BROADER_SEARCHES);
   const fullAdaptiveContext = adaptiveContext + perfContext;
+  const stats = useGlobalStats(orgResults, broaderResults, savedRoles, learnedOrgs, orgPerf, broaderPerf);
 
   const tabs = [
     { key: "orgscan",  label: "Org Scan" },
     { key: "broader",  label: "Broader Search" },
-    { key: "saved",    label: `Saved ★ ${stats.starred > 0 ? stats.starred : ""}` },
+    { key: "saved",    label: `Saved ★ ${stats.saved > 0 ? stats.saved : ""}` },
     { key: "add",      label: "+ Add Posting" },
     { key: "insights", label: "Insights" },
   ];
@@ -1710,7 +1710,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v26 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v27 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
