@@ -335,7 +335,7 @@ async function callClaudePure(prompt) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         model: "claude-sonnet-4-6",
-        max_tokens: 2000,
+        max_tokens: 4000,
         messages: [{ role: "user", content: prompt }]
       })
     });
@@ -1082,7 +1082,7 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v29", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v30", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -1494,44 +1494,47 @@ function InsightsPanel({ signals, savedRoles, learnedOrgs, setLearnedOrgs, orgPe
       if (s.notes) notes.push(s.notes);
     });
 
-    const orgPerfRows = Object.entries(orgPerf || {}).map(([id, p]) => ({
-      name: TARGET_ORGS.find(o => o.id === id)?.name || id,
-      score: p.score, starred: p.rolesStarred || 0, shown: p.rolesShown || 0, emptyScans: p.zeroScans || 0
-    })).sort((a,b) => b.score - a.score);
+    // Build compact text summaries instead of raw JSON to keep prompt lean
+    const savedLines = savedList.slice(0, 20).map(r =>
+      `- ${r.title} @ ${r.orgName || r.org} (${r.relevance || "?"}, ${r.source === "user_submitted" ? "user-added" : "starred"})`
+    ).join("\n");
 
-    const broaderPerfRows = Object.entries(broaderPerf || {}).map(([id, p]) => ({
-      name: BROADER_SEARCHES.find(s => s.id === id)?.label || id,
-      score: p.score, starred: p.rolesStarred || 0, shown: p.rolesShown || 0, emptyScans: p.zeroScans || 0
-    })).sort((a,b) => b.score - a.score);
+    const orgPerfLines = Object.entries(orgPerf || {}).map(([id, p]) => {
+      const name = TARGET_ORGS.find(o => o.id === id)?.name || id;
+      return `- ${name}: score ${p.score}, ${p.rolesStarred||0} starred, ${p.rolesShown||0} shown, ${p.zeroScans||0} empty scans`;
+    }).sort((a,b) => {
+      const sa = parseInt(a.match(/score (-?\d+)/)?.[1]||0);
+      const sb = parseInt(b.match(/score (-?\d+)/)?.[1]||0);
+      return sb-sa;
+    }).join("\n");
 
-    const savedSummary = savedList.slice(0, 30).map(r => ({
-      title: r.title, org: r.orgName || r.org, relevance: r.relevance,
-      source: r.source, savedAt: r.savedAt
-    }));
+    const broaderPerfLines = Object.entries(broaderPerf || {}).map(([id, p]) => {
+      const name = BROADER_SEARCHES.find(s => s.id === id)?.label || id;
+      return `- ${name}: score ${p.score}, ${p.rolesStarred||0} starred, ${p.rolesShown||0} shown`;
+    }).join("\n");
 
-    const prompt = `You are the intelligence layer of a job discovery system built for Bella Daniel-Hunsicker. Bella has an MSc in Gender Studies & Sexuality Studies from LSE (graduating Sep 2026) and a BA in Diaspora & Transnational Studies from U of T. She works FROM WITHIN communities — not as a spokesperson. Her cause areas: LGBTQ+ rights, immigrant rights, reproductive rights, digital rights. Geographic focus: Toronto (primary), Chicago (strong second), New York (deferred), London (while still there). She excludes government/civil service roles.
+    const cityLines = Object.entries(cityCount).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k}: ${v}`).join(", ");
+    const catLines = Object.entries(catCount).sort((a,b)=>b[1]-a[1]).map(([k,v])=>`${k}: ${v}`).join(", ");
 
-Here is the current state of her job search system:
+    const prompt = `You are the intelligence layer of a job discovery system for Bella Daniel-Hunsicker. Bella: MSc Gender/Sexuality Studies LSE (Sep 2026), BA Diaspora & Transnational Studies UofT. Works FROM WITHIN communities. Causes: LGBTQ+ rights, immigrant rights, reproductive rights, digital rights. Cities: Toronto (primary), Chicago (strong second), New York (deferred), London. No government roles.
 
 SAVED ROLES (${savedList.length} total):
-${JSON.stringify(savedSummary, null, 2)}
+${savedLines}
 
-FEEDBACK SIGNALS:
-- Total signals: ${signals.length}
-- City distribution: ${JSON.stringify(cityCount)}
-- Category distribution: ${JSON.stringify(catCount)}
-- Explicitly endorsed orgs (thumb up): ${thumbUps.length ? [...new Set(thumbUps)].join(", ") : "none yet"}
-- Explicitly rejected orgs (thumb down): ${thumbDowns.length ? [...new Set(thumbDowns)].join(", ") : "none yet"}
-- User notes on fit: ${notes.length ? notes.slice(-5).map(n => '"' + n + '"').join(", ") : "none yet"}
+SIGNALS (${signals.length} total):
+- Cities: ${cityLines || "none yet"}
+- Categories: ${catLines || "none yet"}
+- Thumb up orgs: ${thumbUps.length ? [...new Set(thumbUps)].join(", ") : "none"}
+- Thumb down orgs: ${thumbDowns.length ? [...new Set(thumbDowns)].join(", ") : "none"}
+- User notes: ${notes.length ? notes.slice(-3).join(" | ") : "none"}
 
-ORG SCAN PERFORMANCE (scored by stars vs empty scans):
-${JSON.stringify(orgPerfRows.slice(0, 10), null, 2)}
+ORG SCAN PERFORMANCE:
+${orgPerfLines || "No scans yet"}
 
 BROADER SEARCH PERFORMANCE:
-${JSON.stringify(broaderPerfRows.slice(0, 8), null, 2)}
+${broaderPerfLines || "No searches yet"}
 
-LEARNED ORGS (discovered via saved/pasted roles):
-${learnedOrgs.map(o => o.name + " (" + o.city + ", " + o.category + ")").join(", ") || "none yet"}
+LEARNED ORGS: ${learnedOrgs.map(o => o.name + " (" + o.city + ")").join(", ") || "none yet"}
 
 Based on all of this, generate a concise strategic brief in exactly this JSON structure:
 {
@@ -1934,7 +1937,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v29 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v30 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
