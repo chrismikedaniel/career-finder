@@ -402,6 +402,48 @@ async function callClaudePure(prompt) {
   }
 }
 
+// Fast web search using Haiku — used for broader searches to avoid Sonnet timeout
+async function callClaudeHaikuSearch(prompt, adaptiveContext = "") {
+  try {
+    const res = await fetch("/.netlify/functions/claude", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-haiku-4-5-20251001",
+        max_tokens: 3000,
+        system: (adaptiveContext || "") + "\n\nRespond with ONLY valid JSON. Start with { end with }. No markdown fences.",
+        tools: [{ type: "web_search_20250305", name: "web_search" }],
+        messages: [{ role: "user", content: prompt }]
+      })
+    });
+    const data = await res.json();
+    if (data.error) {
+      const msg = data.error?.message || "";
+      if (_setApiError) _setApiError(msg.includes("credit") ? "credits" : "other");
+      console.error("callClaudeHaikuSearch error:", data.error);
+      return null;
+    }
+    if (_setApiError) _setApiError(null);
+    const blocks = data.content || [];
+    const text = blocks.filter(b => b.type === "text").map(b => b.text).join("\n");
+    if (!text) return null;
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start === -1 || end === -1) return null;
+    try { return JSON.parse(text.slice(start, end + 1)); }
+    catch(_) {
+      try {
+        const cleaned = text.replace(/```json|```/g, "").trim();
+        const s2 = cleaned.indexOf("{"), e2 = cleaned.lastIndexOf("}");
+        return JSON.parse(cleaned.slice(s2, e2 + 1));
+      } catch(_) { return null; }
+    }
+  } catch(e) {
+    console.error("callClaudeHaikuSearch exception:", e);
+    return null;
+  }
+}
+
 async function callClaudeJSON(prompt, adaptiveContext = "") {
   const res = await fetch("/.netlify/functions/claude", {
     method: "POST",
@@ -877,31 +919,27 @@ function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, ad
     setRunning(p => ({ ...p, [search.id]: true }));
     const searchId = search.id;
     const runAt = new Date().toISOString();
-    const liUrl = "https://www.linkedin.com/jobs/search/?keywords=" + encodeURIComponent(search.query.split(" ").slice(0, 5).join("+"));
-    const idUrl = "https://www.idealist.org/en/jobs?q=" + encodeURIComponent(search.query.split(" ").slice(0, 4).join("+"));
-    // Split query into keyword clusters for multi-angle searching
-    const queryTerms = search.query.split(" ").filter(Boolean);
-    const angle1 = queryTerms.slice(0, 5).join(" ");
-    const angle2 = queryTerms.slice(0, 3).join(" ") + " " + (search.city !== "Multiple" ? search.city : "");
-    const angle3 = search.hint ? search.hint.split("—")[0].trim().split(",")[0].trim() : angle1;
+    const cityEnc = search.city !== "Multiple" ? encodeURIComponent(search.city) : "";
+    const kwEnc = encodeURIComponent(search.query.split(" ").slice(0,5).join("+"));
+    const liUrl = "https://www.linkedin.com/jobs/search/?keywords=" + kwEnc + (cityEnc ? "&location=" + cityEnc : "");
+    const idUrl = "https://www.idealist.org/en/jobs?q=" + kwEnc + (cityEnc ? "&location=" + cityEnc : "");
+    const indeedUrl = "https://www.indeed.com/jobs?q=" + kwEnc + (cityEnc ? "&l=" + cityEnc : "");
+    const orgHints = search.hint ? search.hint.split("—")[0].split(",").map(s => s.trim()).filter(Boolean) : [];
 
-    const prompt = `You are helping find job postings for Bella Daniel-Hunsicker. Search the web right now for current open roles.
+    const prompt = `You are a job search assistant. Find current open roles for Bella Daniel-Hunsicker (entry to mid-level, nonprofit/advocacy sector).
 
-SEARCH TASK: Find entry-level and coordinator-level job postings for: ${search.query}
-CITY FOCUS: ${search.city}
-OPERATOR HINT: ${search.hint || ""}
+SEARCH: ${search.label}
+KEYWORDS: ${search.query}
+CITY: ${search.city}
+${orgHints.length ? "CHECK THESE ORGS SPECIFICALLY: " + orgHints.join(", ") : ""}
 
-Do the following searches:
-- Search "${angle1} jobs"
-- Search "${angle2.trim()} careers"  
-- Search "${angle3} jobs hiring 2026"
-- Check LinkedIn Jobs, Idealist.org, Indeed, and the careers pages of specific orgs mentioned in the hint above
-
-IMPORTANT: Be liberal in what you include. A role doesn't need to be a perfect match — if it's in the right city, right cause area, and right level (entry to mid-level), include it. Coordinator, Associate, Specialist, Manager, Officer titles all count. Report everything you find that's plausibly relevant.
-
-Skip only these already-scanned orgs: ICIRR, Stonewall, Guttmacher, Action Canada, CCPA, PEN America, AKT, NIJC, Mozilla, MacArthur, YWCA Toronto, DePaul, AI Now, The 19th, CRR, Open Rights Group.
-
-If you find ANY relevant roles, list them. If search results show job listings on a board, include those too even if you can't verify every detail.
+Instructions:
+1. Search Indeed (${indeedUrl}) for current listings
+2. Search Idealist (${idUrl}) for current listings  
+3. Search each org named above directly (e.g. "Heartland Alliance careers Chicago")
+4. Include coordinator, associate, specialist, officer, manager, director-level roles
+5. Be inclusive — if it's in the right city and cause area, include it
+6. Exclude only: ICIRR, NIJC, Mozilla, MacArthur, YWCA Toronto, DePaul, AI Now, The 19th, CRR, Open Rights Group, PEN America, AKT, Stonewall, Guttmacher, Action Canada, CCPA (scanned separately)
 
 Return JSON:
 {
@@ -926,7 +964,7 @@ Return JSON:
   ]
 }`;
     try {
-      const data = await callClaudeJSON(prompt, adaptiveContext);
+      const data = await callClaudeHaikuSearch(prompt, adaptiveContext);
       const result = data || {
         searchId,
         runAt,
@@ -1158,7 +1196,7 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v39", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v40", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -2106,7 +2144,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v39 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v40 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
