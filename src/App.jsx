@@ -69,19 +69,33 @@ async function loadScanResults(scanType) {
 }
 
 async function upsertRole(role, orgName, source = "starred") {
+  // Resolve org name — never blank
+  const resolvedOrg = (role.org && role.org.trim()) || (orgName && orgName.trim()) || "Unknown Org";
+  const resolvedOrgName = (orgName && orgName.trim()) || resolvedOrg;
+
+  // Infer category from title + org so it's always populated
+  const category = inferCategory(role.title || "", resolvedOrg);
+
   const { error } = await supabase.from("saved_roles").upsert({
-    id: role.id, title: role.title,
-    org: role.org || orgName, org_name: orgName,
-    location: role.location || null, type: role.type || null,
-    relevance: role.relevance || null, deadline: role.deadline || null,
-    why_fit: role.whyFit || null, direct_url: role.directUrl || null,
-    linkedin_url: role.linkedInUrl || null, idealist_url: role.idealistUrl || null,
+    id: role.id,
+    title: role.title || "Untitled Role",
+    org: resolvedOrg,
+    org_name: resolvedOrgName,
+    category: category || "Advocacy",
+    location: (role.location && role.location.trim()) || null,
+    type: (role.type && role.type.trim()) || "Full-time",
+    relevance: (role.relevance && role.relevance.trim()) || "Medium",
+    deadline: role.deadline || null,
+    why_fit: (role.whyFit && role.whyFit.trim()) || null,
+    direct_url: role.directUrl || null,
+    linkedin_url: role.linkedInUrl || null,
+    idealist_url: role.idealistUrl || null,
     source: source,
     saved_at: new Date().toISOString()
   });
   if (error) { console.error("upsertRole error:", error); throw error; }
   // Fire feedback signal — awaited so learned_orgs is ready before callers reload state
-  await fireSignal(role, orgName, source);
+  await fireSignal(role, resolvedOrgName, source);
 }
 
 async function removeRole(id) {
@@ -95,9 +109,9 @@ async function loadSavedRoles() {
     if (!data) return {};
     return Object.fromEntries(data.map(row => [row.id, {
       id: row.id, title: row.title, org: row.org, orgName: row.org_name,
-      location: row.location, type: row.type, relevance: row.relevance,
-      deadline: row.deadline, whyFit: row.why_fit, directUrl: row.direct_url,
-      linkedInUrl: row.linkedin_url, idealistUrl: row.idealist_url,
+      category: row.category, location: row.location, type: row.type,
+      relevance: row.relevance, deadline: row.deadline, whyFit: row.why_fit,
+      directUrl: row.direct_url, linkedInUrl: row.linkedin_url, idealistUrl: row.idealist_url,
       source: row.source || "starred", savedAt: row.saved_at
     }]));
   } catch(e) { console.error("loadSavedRoles:", e); return {}; }
@@ -1082,7 +1096,7 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v32", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v34", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -1973,7 +1987,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v32 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v34 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
