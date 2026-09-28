@@ -203,9 +203,29 @@ async function loadLearnedOrgs() {
   } catch(e) { console.error("loadLearnedOrgs:", e); return []; }
 }
 
-// Build adaptive context string from feedback signals
-function buildAdaptiveContext(signals) {
-  if (!signals.length) return "";
+async function saveBrief(brief, signalCount, roleCount) {
+  const id = "brief-" + Date.now();
+  const { error } = await supabase.from("insights_briefs").insert({
+    id,
+    content: brief,
+    signal_count: signalCount,
+    role_count: roleCount,
+    created_at: new Date().toISOString()
+  });
+  if (error) console.error("saveBrief:", error);
+  return id;
+}
+
+async function loadBriefs(limit = 5) {
+  try {
+    const { data } = await supabase.from("insights_briefs").select("*")
+      .order("created_at", { ascending: false }).limit(limit);
+    return data || [];
+  } catch(e) { console.error("loadBriefs:", e); return []; }
+}
+
+// Build adaptive context string from feedback signals + latest brief
+function buildAdaptiveContext(signals, latestBrief) {
   const cityCount = {};
   const catCount = {};
   const thumbUpOrgs = [];
@@ -223,10 +243,24 @@ function buildAdaptiveContext(signals) {
   const topCities = Object.entries(cityCount).sort((a,b) => b[1]-a[1]).slice(0,3).map(([c]) => c);
   const topCats = Object.entries(catCount).sort((a,b) => b[1]-a[1]).slice(0,3).map(([c]) => c);
 
-  let ctx = `\n\nLEARNED PREFERENCES (from ${signals.length} signals): Top cities: ${topCities.join(", ")}. Top categories: ${topCats.join(", ")}. Weight these higher in relevance scoring.`;
+  let ctx = signals.length
+    ? `\n\nLEARNED PREFERENCES (from ${signals.length} signals): Top cities: ${topCities.join(", ")}. Top categories: ${topCats.join(", ")}. Weight these higher in relevance scoring.`
+    : "";
+
   if (thumbUpOrgs.length) ctx += ` Explicitly endorsed orgs: ${[...new Set(thumbUpOrgs)].join(", ")} — surface similar roles.`;
   if (thumbDownOrgs.length) ctx += ` Explicitly rejected orgs: ${[...new Set(thumbDownOrgs)].join(", ")} — deprioritize similar roles.`;
   if (thumbNotes.length) ctx += ` User notes on fit: "${thumbNotes.slice(-3).join('" · "')}" — use these to calibrate relevance.`;
+
+  // Fold in the latest intelligence brief's action items
+  if (latestBrief?.nextActions) {
+    const na = latestBrief.nextActions;
+    if (na.scanPriorities?.length) ctx += `\n\nINTELLIGENCE BRIEF — SCAN PRIORITIES: ${na.scanPriorities.join(", ")} — treat these as highest priority targets.`;
+    if (na.searchAdjustments?.length) ctx += ` Search adjustments from last brief: ${na.searchAdjustments.join("; ")}.`;
+    if (na.gaps?.length) ctx += ` Identified gaps to explore: ${na.gaps.join("; ")} — flag roles in these areas as High relevance.`;
+    if (latestBrief.profile?.causes?.length) ctx += ` Current cause focus: ${latestBrief.profile.causes.slice(0,3).join(", ")}.`;
+    if (latestBrief.profile?.roleTypes?.length) ctx += ` Role types landing: ${latestBrief.profile.roleTypes.slice(0,3).join(", ")}.`;
+  }
+
   return ctx;
 }
 
@@ -292,6 +326,41 @@ function buildPerformanceContext(orgPerf, broaderPerf, orgList, searchList) {
 // ─────────────────────────────────────────────────────────────────────────────
 var _setApiError = null;
 function registerApiErrorHandler(fn) { _setApiError = fn; }
+
+// Simplified Claude call — no web search, just pure synthesis. Used for Insights brief.
+async function callClaudePure(prompt) {
+  try {
+    const res = await fetch("/.netlify/functions/claude", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        model: "claude-sonnet-4-6",
+        max_tokens: 2000,
+        messages: [{ role: "user", content: prompt }]
+      })
+    });
+    const data = await res.json();
+    if (data.error) {
+      const msg = data.error?.message || "";
+      const isCredits = msg.toLowerCase().includes("credit") || msg.toLowerCase().includes("balance");
+      if (_setApiError) _setApiError(isCredits ? "credits" : "other");
+      console.error("callClaudePure error:", data.error);
+      return null;
+    }
+    if (_setApiError) _setApiError(null);
+    const blocks = data.content || [];
+    const text = blocks.filter(b => b.type === "text").map(b => b.text).join("\n");
+    if (!text) return null;
+    const start = text.indexOf("{");
+    const end = text.lastIndexOf("}");
+    if (start === -1 || end === -1) return null;
+    try { return JSON.parse(text.slice(start, end + 1)); }
+    catch(_) { return null; }
+  } catch(e) {
+    console.error("callClaudePure exception:", e);
+    return null;
+  }
+}
 
 async function callClaudeJSON(prompt, adaptiveContext = "") {
   const res = await fetch("/.netlify/functions/claude", {
@@ -1013,7 +1082,7 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v27", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v29", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -1108,11 +1177,17 @@ Return JSON:
   "source": "user_submitted"
 }`;
       const data = await callClaudeJSON(prompt);
-      if (data && data.title) {
+      const isBlocked = !data || !data.title
+        || data.title.toUpperCase().includes("UNABLE")
+        || (data.org || "").toUpperCase().includes("UNABLE")
+        || (data.whyFit || "").toUpperCase().includes("UNABLE TO RETRIEVE");
+
+      if (!isBlocked) {
+        // Pre-fill manual fields from parsed data so user can edit before saving
+        setManual({ title: data.title, org: data.org || "", location: data.location || "", type: data.type || "Full-time", description: data.whyFit || "" });
         setResult(data);
         setStatus("success");
       } else {
-        // Couldn't parse — drop into manual entry with URL pre-filled
         setManual(prev => ({ ...prev }));
         setStatus("manual");
         setErrorMsg("The site blocked automatic analysis. Enter the details manually below.");
@@ -1267,9 +1342,12 @@ Return JSON:
       {/* Result preview */}
       {status === "success" && result && (
         <div style={{ border: "1.5px solid #1E6B3C", borderRadius: 10, overflow: "hidden" }}>
-          <div style={{ background: "#1B2A4A", padding: "12px 16px" }}>
-            <div style={{ fontSize: 15, fontWeight: 800, color: "#FFF" }}>{result.title}</div>
-            <div style={{ fontSize: 12, color: "#7A9CC4", marginTop: 2 }}>{result.org} · {result.location} · {result.type}</div>
+          <div style={{ background: "#1B2A4A", padding: "12px 16px", display: "flex", justifyContent: "space-between", alignItems: "flex-start" }}>
+            <div>
+              <div style={{ fontSize: 15, fontWeight: 800, color: "#FFF" }}>{result.title}</div>
+              <div style={{ fontSize: 12, color: "#7A9CC4", marginTop: 2 }}>{result.org} · {result.location} · {result.type}</div>
+            </div>
+            <button onClick={() => setStatus("editing")} style={{ fontSize: 10, fontWeight: 700, color: "#4DADA3", background: "rgba(255,255,255,0.1)", border: "none", borderRadius: 4, padding: "4px 8px", cursor: "pointer", flexShrink: 0, marginLeft: 8 }}>Edit</button>
           </div>
           <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 10 }}>
             {result.salary && <div style={{ fontSize: 12, color: "#555" }}>Salary: {result.salary}</div>}
@@ -1296,6 +1374,51 @@ Return JSON:
               </button>
               <button onClick={() => { setStatus("idle"); setResult(null); setUrl(""); }} style={{ padding: "10px 16px", borderRadius: 8, border: "1.5px solid #DDD", background: "#FFF", color: "#888", fontSize: 13, cursor: "pointer" }}>
                 Discard
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Edit mode — tweak parsed fields before saving */}
+      {status === "editing" && result && (
+        <div style={{ border: "1.5px solid #4DADA3", borderRadius: 10, overflow: "hidden" }}>
+          <div style={{ background: "#1B2A4A", padding: "12px 16px" }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: "#4DADA3" }}>Edit before saving</div>
+          </div>
+          <div style={{ padding: "14px 16px", display: "flex", flexDirection: "column", gap: 8 }}>
+            {[
+              { key: "title", label: "Role title" },
+              { key: "org", label: "Organization" },
+              { key: "location", label: "Location" },
+            ].map(f => (
+              <div key={f.key}>
+                <div style={{ fontSize: 10, fontWeight: 700, color: "#666", marginBottom: 3 }}>{f.label}</div>
+                <input value={manual[f.key]} onChange={e => setManual(prev => ({ ...prev, [f.key]: e.target.value }))}
+                  style={{ width: "100%", fontSize: 12, padding: "7px 10px", borderRadius: 6, border: "1.5px solid #DDD", fontFamily: "inherit", outline: "none" }} />
+              </div>
+            ))}
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#666", marginBottom: 3 }}>Type</div>
+              <select value={manual.type} onChange={e => setManual(prev => ({ ...prev, type: e.target.value }))}
+                style={{ fontSize: 12, padding: "7px 10px", borderRadius: 6, border: "1.5px solid #DDD", fontFamily: "inherit", background: "#FFF" }}>
+                {["Full-time","Part-time","Contract","Fellowship"].map(t => <option key={t}>{t}</option>)}
+              </select>
+            </div>
+            <div>
+              <div style={{ fontSize: 10, fontWeight: 700, color: "#666", marginBottom: 3 }}>Notes / why it fits</div>
+              <textarea value={manual.description} onChange={e => setManual(prev => ({ ...prev, description: e.target.value }))}
+                rows={3} style={{ width: "100%", fontSize: 12, padding: "7px 10px", borderRadius: 6, border: "1.5px solid #DDD", fontFamily: "inherit", outline: "none", resize: "vertical" }} />
+            </div>
+            <div style={{ display: "flex", gap: 8, marginTop: 4 }}>
+              <button onClick={() => {
+                setResult(prev => ({ ...prev, title: manual.title, org: manual.org, location: manual.location, type: manual.type, whyFit: manual.description }));
+                setStatus("success");
+              }} style={{ flex: 1, padding: "10px", borderRadius: 8, border: "none", background: "#1B2A4A", color: "#FFF", fontSize: 13, fontWeight: 700, cursor: "pointer" }}>
+                ✓ Apply edits
+              </button>
+              <button onClick={() => setStatus("success")} style={{ padding: "10px 16px", borderRadius: 8, border: "1.5px solid #DDD", background: "#FFF", color: "#888", fontSize: 13, cursor: "pointer" }}>
+                Cancel
               </button>
             </div>
           </div>
@@ -1334,12 +1457,23 @@ function InsightTag({ label, color = "#1D6A72", bg = "#E8F4F5" }) {
 function directionIcon(d) { return d === "rising" ? "↑" : d === "falling" ? "↓" : "✦"; }
 function directionColor(d) { return d === "rising" ? "#1E6B3C" : d === "falling" ? "#A63228" : "#5B4DB8"; }
 
-function InsightsPanel({ signals, savedRoles, learnedOrgs, orgPerf, broaderPerf }) {
-  const [brief, setBrief] = useState(null);       // { profile, changing, nextActions, generatedAt }
+function InsightsPanel({ signals, savedRoles, learnedOrgs, setLearnedOrgs, orgPerf, broaderPerf, briefs, setBriefs }) {
+  const latestSaved = briefs?.[0] || null;
+  const [brief, setBrief] = useState(latestSaved ? { ...latestSaved.content, generatedAt: latestSaved.created_at, id: latestSaved.id } : null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  // Sync brief when briefs array loads from DB (initial mount)
+  useEffect(() => {
+    if (briefs?.[0] && !brief) {
+      const b = briefs[0];
+      setBrief({ ...b.content, generatedAt: b.created_at, id: b.id });
+    }
+  }, [briefs]);
+
   const savedList = Object.values(savedRoles);
+
+  const [expandedBriefId, setExpandedBriefId] = useState(null);
 
   const generateBrief = async () => {
     setLoading(true);
@@ -1425,16 +1559,43 @@ Based on all of this, generate a concise strategic brief in exactly this JSON st
   }
 }
 
+Also add a "newOrgs" array to nextActions — up to 5 specific org names that are NOT already in Bella's scan list but clearly belong given her profile and current signals. Be specific: name the actual org, not a category.
+
 Return only valid JSON. No markdown, no preamble.`;
 
     try {
-      const data = await callClaudeJSON(prompt);
+      const data = await callClaudePure(prompt);
       if (data?.profile && data?.changing && data?.nextActions) {
-        setBrief({ ...data, generatedAt: new Date() });
+        // Save to DB
+        const briefId = await saveBrief(data, signals.length, savedList.length);
+
+        // Write any new orgs Claude identified to learned_orgs
+        const newOrgs = data.nextActions?.newOrgs || [];
+        for (const orgName of newOrgs) {
+          if (!orgName) continue;
+          const orgKey = "org-" + orgName.toLowerCase().replace(/[^a-z0-9]/g, "-");
+          const alreadyLearned = learnedOrgs.some(lo => lo.name.toLowerCase() === orgName.toLowerCase());
+          const alreadyNamed = TARGET_ORGS.some(o => o.name.toLowerCase() === orgName.toLowerCase() || o.fullName?.toLowerCase() === orgName.toLowerCase());
+          if (!alreadyLearned && !alreadyNamed) {
+            const { error } = await supabase.from("learned_orgs").upsert({
+              id: orgKey, name: orgName, city: "Unknown", category: "Advocacy",
+              source_role_id: "brief-" + briefId, created_at: new Date().toISOString()
+            });
+            if (error) console.error("brief learned_org write:", error);
+          }
+        }
+        // Reload learned orgs if new ones were added
+        if (newOrgs.length) loadLearnedOrgs().then(orgs => setLearnedOrgs(orgs));
+
+        const enriched = { ...data, generatedAt: new Date().toISOString(), id: briefId };
+        setBriefs(prev => [{ id: briefId, content: data, created_at: enriched.generatedAt }, ...prev].slice(0, 10));
+        setBrief(enriched);
       } else {
+        console.error("Brief parse failed, got:", data);
         setError("Couldn't parse the brief. Try again.");
       }
     } catch(e) {
+      console.error("Brief exception:", e);
       setError("Something went wrong generating the brief.");
     }
     setLoading(false);
@@ -1456,7 +1617,7 @@ Return only valid JSON. No markdown, no preamble.`;
         <div>
           <div style={{ fontSize: 14, fontWeight: 800, color: "#1B2A4A" }}>Search Intelligence Brief</div>
           <div style={{ fontSize: 11, color: "#999", marginTop: 2 }}>
-            {brief ? `Generated ${brief.generatedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Claude synthesizes all signals into a strategic read on the search."}
+            {brief ? `Generated ${new Date(brief.generatedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })} at ${new Date(brief.generatedAt).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Claude synthesizes all signals into a strategic read on the search."}
           </div>
         </div>
         <button onClick={generateBrief} disabled={loading} style={{
@@ -1534,11 +1695,69 @@ Return only valid JSON. No markdown, no preamble.`;
             <div style={{ fontSize: 13, color: "#444", lineHeight: 1.7, borderTop: "1px solid #F0F0F0", paddingTop: 12 }}>{brief.nextActions.summary}</div>
           </InsightSection>
 
+          {/* New orgs from brief */}
+          {brief?.nextActions?.newOrgs?.length > 0 && (
+            <div style={{ background: "#F0EEFF", border: "1.5px solid #5B4DB8", borderRadius: 12, padding: "14px 18px" }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "#5B4DB8", textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 8 }}>New orgs added to scan list</div>
+              <div style={{ fontSize: 12, color: "#555", lineHeight: 1.6 }}>
+                The brief identified these orgs as gaps — they've been added to your Org Scan list automatically:
+              </div>
+              <div style={{ marginTop: 8 }}>
+                {brief.nextActions.newOrgs.map(o => <InsightTag key={o} label={o} color="#5B4DB8" bg="#E8E2FF" />)}
+              </div>
+            </div>
+          )}
+
           {/* Last updated */}
-          <div style={{ textAlign: "center", fontSize: 11, color: "#BBB", paddingBottom: 8 }}>
+          <div style={{ textAlign: "center", fontSize: 11, color: "#BBB", paddingBottom: 4 }}>
             Based on {signals.length} signals · {savedList.length} saved roles · {learnedOrgs.length} learned orgs
           </div>
         </>
+      )}
+
+      {/* Brief history */}
+      {briefs.length > 1 && (
+        <div style={{ background: "#FFF", border: "1.5px solid #E4E4E4", borderRadius: 12, overflow: "hidden" }}>
+          <div style={{ padding: "12px 18px", borderBottom: "1px solid #F0F0F0", display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+            <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A" }}>Brief History</div>
+            <div style={{ fontSize: 11, color: "#AAA" }}>{briefs.length} saved</div>
+          </div>
+          {briefs.slice(1).map(b => {
+            const isExpanded = expandedBriefId === b.id;
+            const d = new Date(b.created_at);
+            const label = d.toLocaleDateString("en-US", { month: "short", day: "numeric" }) + " · " + d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+            return (
+              <div key={b.id} style={{ borderBottom: "1px solid #F4F4F4" }}>
+                <button onClick={() => setExpandedBriefId(isExpanded ? null : b.id)} style={{
+                  width: "100%", display: "flex", justifyContent: "space-between", alignItems: "center",
+                  padding: "10px 18px", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit"
+                }}>
+                  <div style={{ fontSize: 12, color: "#555", fontWeight: 600, textAlign: "left", flex: 1 }}>{b.content?.profile?.headline || "Brief"}</div>
+                  <div style={{ display: "flex", gap: 10, alignItems: "center", flexShrink: 0 }}>
+                    <span style={{ fontSize: 10, color: "#AAA" }}>{label}</span>
+                    <span style={{ fontSize: 10, color: "#AAA" }}>{isExpanded ? "▲" : "▼"}</span>
+                  </div>
+                </button>
+                {isExpanded && (
+                  <div style={{ padding: "0 18px 14px" }}>
+                    <div style={{ fontSize: 12, color: "#444", lineHeight: 1.7, marginBottom: 8 }}>{b.content?.profile?.summary}</div>
+                    <div style={{ fontSize: 11, color: "#888", fontStyle: "italic" }}>{b.content?.changing?.headline}</div>
+                    {b.content?.nextActions?.scanPriorities?.length > 0 && (
+                      <div style={{ marginTop: 8 }}>
+                        <div style={{ fontSize: 10, fontWeight: 800, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>Scan priorities at the time</div>
+                        {b.content.nextActions.scanPriorities.map(p => <InsightTag key={p} label={p} color="#5B4DB8" bg="#F0EEFF" />)}
+                      </div>
+                    )}
+                    <button onClick={() => { setBrief({ ...b.content, generatedAt: b.created_at, id: b.id }); setExpandedBriefId(null); }}
+                      style={{ marginTop: 10, fontSize: 11, fontWeight: 700, color: "#1D6A72", background: "#E8F4F5", border: "none", borderRadius: 6, padding: "5px 12px", cursor: "pointer", fontFamily: "inherit" }}>
+                      Restore this brief
+                    </button>
+                  </div>
+                )}
+              </div>
+            );
+          })}
+        </div>
       )}
 
       {/* Empty state before first generate */}
@@ -1564,30 +1783,34 @@ export default function App() {
   const [savedRoles, setSavedRoles] = useState({});
   const [signals, setSignals] = useState([]);
   const [learnedOrgs, setLearnedOrgs] = useState([]);
+  const [briefs, setBriefs] = useState([]);
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState(null);
 
   useEffect(() => {
     registerApiErrorHandler(setApiError);
     async function init() {
-      const [org, broader, saved, sigs, lorgs] = await Promise.all([
+      const [org, broader, saved, sigs, lorgs, bfs] = await Promise.all([
         loadScanResults("org"),
         loadScanResults("broader"),
         loadSavedRoles(),
         loadFeedbackSignals(),
-        loadLearnedOrgs()
+        loadLearnedOrgs(),
+        loadBriefs()
       ]);
       setOrgResults(org);
       setBroaderResults(broader);
       setSavedRoles(saved);
       setSignals(sigs);
       setLearnedOrgs(lorgs);
+      setBriefs(bfs);
       setLoading(false);
     }
     init();
   }, []);
 
-  const adaptiveContext = buildAdaptiveContext(signals);
+  const latestBrief = briefs[0]?.content || null;
+  const adaptiveContext = buildAdaptiveContext(signals, latestBrief);
 
   const savedRolesList = Object.values(savedRoles);
   const orgPerf = computeSourcePerformance(orgResults, savedRolesList, "org");
@@ -1621,7 +1844,7 @@ export default function App() {
 
           {/* Row 1: logo + title + live dot */}
           <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
-            <img src="/apple-touch-icon.png" alt="logo" style={{ width: 28, height: 28, flexShrink: 0 }}/>
+            <img src="data:image/png;base64,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" alt="logo" style={{ width: 28, height: 28, flexShrink: 0 }}/>
             <h1 style={{ fontSize: 15, fontWeight: 800, color: "#FFF", letterSpacing: "-0.01em", flex: 1, minWidth: 0 }}>Job Posting Discovery Agent</h1>
             <div
               title={apiError === "credits" ? "API credits exhausted — top up at console.anthropic.com/settings/billing" : apiError === "other" ? "API error — check console for details" : "Live search active"}
@@ -1701,8 +1924,9 @@ export default function App() {
         {tab === "insights" && (
           <InsightsPanel
             signals={signals} savedRoles={savedRoles}
-            learnedOrgs={learnedOrgs}
+            learnedOrgs={learnedOrgs} setLearnedOrgs={setLearnedOrgs}
             orgPerf={orgPerf} broaderPerf={broaderPerf}
+            briefs={briefs} setBriefs={setBriefs}
           />
         )}
       </div>
@@ -1710,7 +1934,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v27 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v29 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
