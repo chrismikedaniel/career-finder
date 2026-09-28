@@ -1006,7 +1006,7 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v24", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v25", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -1309,173 +1309,236 @@ Return JSON:
 // INSIGHTS PANEL
 // ─────────────────────────────────────────────────────────────────────────────
 function InsightsPanel({ signals, savedRoles, learnedOrgs, orgPerf, broaderPerf }) {
+  const [brief, setBrief] = useState(null);       // { profile, changing, nextActions, generatedAt }
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+
   const savedList = Object.values(savedRoles);
-  const totalSaved = savedList.length;
-  const userSubmitted = savedList.filter(r => r.source === "user_submitted").length;
 
-  // City breakdown
-  const cityCount = {};
-  signals.forEach(s => { cityCount[s.city] = (cityCount[s.city] || 0) + 1; });
-  const cities = Object.entries(cityCount).sort((a,b) => b[1]-a[1]);
-  const topCity = cities[0]?.[0] || "—";
+  const generateBrief = async () => {
+    setLoading(true);
+    setError(null);
 
-  // Category breakdown
-  const catCount = {};
-  signals.forEach(s => { catCount[s.category] = (catCount[s.category] || 0) + 1; });
-  const cats = Object.entries(catCount).sort((a,b) => b[1]-a[1]);
-  const topCat = cats[0]?.[0] || "—";
+    // Build a compact data snapshot to send to Claude
+    const cityCount = {};
+    const catCount = {};
+    const thumbUps = [];
+    const thumbDowns = [];
+    const notes = [];
 
-  // Relevance breakdown
-  const relCount = { High: 0, Medium: 0, Low: 0 };
-  savedList.forEach(r => { if (relCount[r.relevance] !== undefined) relCount[r.relevance]++; });
+    signals.forEach(s => {
+      if (s.city) cityCount[s.city] = (cityCount[s.city] || 0) + 1;
+      if (s.category) catCount[s.category] = (catCount[s.category] || 0) + 1;
+      if (s.thumb === "up" && s.org) thumbUps.push(s.org);
+      if (s.thumb === "down" && s.org) thumbDowns.push(s.org);
+      if (s.notes) notes.push(s.notes);
+    });
 
-  // Org breakdown
-  const orgCount = {};
-  savedList.forEach(r => { const o = r.orgName || r.org; orgCount[o] = (orgCount[o] || 0) + 1; });
-  const topOrgs = Object.entries(orgCount).sort((a,b) => b[1]-a[1]).slice(0,5);
+    const orgPerfRows = Object.entries(orgPerf || {}).map(([id, p]) => ({
+      name: TARGET_ORGS.find(o => o.id === id)?.name || id,
+      score: p.score, starred: p.rolesStarred || 0, shown: p.rolesShown || 0, emptyScans: p.zeroScans || 0
+    })).sort((a,b) => b.score - a.score);
 
-  const Bar = ({ label, value, max, color }) => (
-    <div style={{ marginBottom: 10 }}>
-      <div style={{ display: "flex", justifyContent: "space-between", fontSize: 12, marginBottom: 4 }}>
-        <span style={{ color: "#555", fontWeight: 600 }}>{label}</span>
-        <span style={{ color, fontWeight: 800 }}>{value}</span>
+    const broaderPerfRows = Object.entries(broaderPerf || {}).map(([id, p]) => ({
+      name: BROADER_SEARCHES.find(s => s.id === id)?.label || id,
+      score: p.score, starred: p.rolesStarred || 0, shown: p.rolesShown || 0, emptyScans: p.zeroScans || 0
+    })).sort((a,b) => b.score - a.score);
+
+    const savedSummary = savedList.slice(0, 30).map(r => ({
+      title: r.title, org: r.orgName || r.org, relevance: r.relevance,
+      source: r.source, savedAt: r.savedAt
+    }));
+
+    const prompt = `You are the intelligence layer of a job discovery system built for Bella Daniel-Hunsicker. Bella has an MSc in Gender Studies & Sexuality Studies from LSE (graduating Sep 2026) and a BA in Diaspora & Transnational Studies from U of T. She works FROM WITHIN communities — not as a spokesperson. Her cause areas: LGBTQ+ rights, immigrant rights, reproductive rights, digital rights. Geographic focus: Toronto (primary), Chicago (strong second), New York (deferred), London (while still there). She excludes government/civil service roles.
+
+Here is the current state of her job search system:
+
+SAVED ROLES (${savedList.length} total):
+${JSON.stringify(savedSummary, null, 2)}
+
+FEEDBACK SIGNALS:
+- Total signals: ${signals.length}
+- City distribution: ${JSON.stringify(cityCount)}
+- Category distribution: ${JSON.stringify(catCount)}
+- Explicitly endorsed orgs (thumb up): ${thumbUps.length ? [...new Set(thumbUps)].join(", ") : "none yet"}
+- Explicitly rejected orgs (thumb down): ${thumbDowns.length ? [...new Set(thumbDowns)].join(", ") : "none yet"}
+- User notes on fit: ${notes.length ? notes.slice(-5).map(n => '"' + n + '"').join(", ") : "none yet"}
+
+ORG SCAN PERFORMANCE (scored by stars vs empty scans):
+${JSON.stringify(orgPerfRows.slice(0, 10), null, 2)}
+
+BROADER SEARCH PERFORMANCE:
+${JSON.stringify(broaderPerfRows.slice(0, 8), null, 2)}
+
+LEARNED ORGS (discovered via saved/pasted roles):
+${learnedOrgs.map(o => o.name + " (" + o.city + ", " + o.category + ")").join(", ") || "none yet"}
+
+Based on all of this, generate a concise strategic brief in exactly this JSON structure:
+{
+  "profile": {
+    "headline": "One sharp sentence describing the current state of Bella's search — what it's converging on",
+    "cities": ["ordered list of cities by signal strength"],
+    "causes": ["ordered list of cause areas by signal strength"],
+    "roleTypes": ["role types/functions that are landing — e.g. Programme Coordinator, Communications, Policy"],
+    "orgTypes": ["types of orgs generating signal — e.g. legal advocacy nonprofits, university human rights centers"],
+    "summary": "2-3 sentences synthesizing the search profile as it stands today. Be specific — name orgs, cities, causes."
+  },
+  "changing": {
+    "headline": "One sentence on the most significant shift happening in the search",
+    "trends": [
+      { "label": "Short trend name", "direction": "rising or falling or new", "detail": "One specific sentence on what this trend means and what's driving it" }
+    ],
+    "summary": "2-3 sentences on how the profile has been changing. If there's not enough history to detect a shift, say so plainly."
+  },
+  "nextActions": {
+    "headline": "One sentence on what the system will focus on next",
+    "scanPriorities": ["List of org names or search categories the system will weight highest in next scans"],
+    "searchAdjustments": ["Specific adjustments to make to broader search queries based on what's working"],
+    "gaps": ["Cause areas, cities, or org types that are underrepresented given Bella's profile and should be explored"],
+    "summary": "2-3 sentences on what the system will do differently next time, and what you as the operator should consider doing manually."
+  }
+}
+
+Return only valid JSON. No markdown, no preamble.`;
+
+    try {
+      const data = await callClaudeJSON(prompt);
+      if (data?.profile && data?.changing && data?.nextActions) {
+        setBrief({ ...data, generatedAt: new Date() });
+      } else {
+        setError("Couldn't parse the brief. Try again.");
+      }
+    } catch(e) {
+      setError("Something went wrong generating the brief.");
+    }
+    setLoading(false);
+  };
+
+  const Section = ({ title, headline, children, accent = "#1B2A4A", accentBg = "#F0F3F8" }) => (
+    <div style={{ background: "#FFF", border: "1.5px solid #E4E4E4", borderRadius: 12, overflow: "hidden" }}>
+      <div style={{ background: accentBg, padding: "12px 18px", borderBottom: "1.5px solid #E4E4E4" }}>
+        <div style={{ fontSize: 10, fontWeight: 800, color: accent, textTransform: "uppercase", letterSpacing: "0.07em", marginBottom: 4 }}>{title}</div>
+        <div style={{ fontSize: 14, fontWeight: 700, color: "#1B2A4A", lineHeight: 1.4 }}>{headline}</div>
       </div>
-      <div style={{ height: 6, background: "#E8E8E8", borderRadius: 3, overflow: "hidden" }}>
-        <div style={{ width: `${(value/max)*100}%`, height: "100%", background: color, borderRadius: 3, transition: "width 0.6s ease" }} />
-      </div>
+      <div style={{ padding: "14px 18px" }}>{children}</div>
     </div>
   );
 
-  if (!totalSaved && !signals.length) return (
-    <div style={{ textAlign: "center", padding: "48px 24px", color: "#AAA" }}>
-      <div style={{ fontSize: 36, marginBottom: 12 }}>📊</div>
-      <div style={{ fontSize: 14, fontWeight: 600, color: "#888" }}>No insights yet</div>
-      <div style={{ fontSize: 12, marginTop: 6 }}>Save roles or run scans to start building your search picture</div>
+  const Tag = ({ label, color = "#1D6A72", bg = "#E8F4F5" }) => (
+    <span style={{ display: "inline-block", fontSize: 11, fontWeight: 700, color, background: bg, padding: "3px 9px", borderRadius: 20, marginRight: 6, marginBottom: 6 }}>{label}</span>
+  );
+
+  const directionIcon = d => d === "rising" ? "↑" : d === "falling" ? "↓" : "✦";
+  const directionColor = d => d === "rising" ? "#1E6B3C" : d === "falling" ? "#A63228" : "#5B4DB8";
+
+  if (!savedList.length && !signals.length) return (
+    <div style={{ textAlign: "center", padding: "48px 24px" }}>
+      <div style={{ fontSize: 36, marginBottom: 12 }}>🧭</div>
+      <div style={{ fontSize: 14, fontWeight: 600, color: "#888" }}>No data yet</div>
+      <div style={{ fontSize: 12, color: "#AAA", marginTop: 6 }}>Save some roles or run scans first, then come back here for your first brief.</div>
     </div>
   );
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
-      {/* Summary cards */}
-      <div style={{ display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: 10 }}>
-        {[
-          { label: "Roles Saved", value: totalSaved, color: "#1B2A4A", bg: "#F0F3F8" },
-          { label: "User Added", value: userSubmitted, color: "#5B4DB8", bg: "#F0EEFF" },
-          { label: "Top City", value: topCity, color: "#1E6B3C", bg: "#EAF4EE" },
-          { label: "Top Category", value: topCat.split(" ")[0], color: "#B8732A", bg: "#FDF3E3" },
-        ].map(s => (
-          <div key={s.label} style={{ background: s.bg, borderRadius: 10, padding: "14px 16px" }}>
-            <div style={{ fontSize: 18, fontWeight: 800, color: s.color, lineHeight: 1.2, marginBottom: 4 }}>{s.value}</div>
-            <div style={{ fontSize: 11, color: "#888" }}>{s.label}</div>
+
+      {/* Generate / refresh button */}
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 800, color: "#1B2A4A" }}>Search Intelligence Brief</div>
+          <div style={{ fontSize: 11, color: "#999", marginTop: 2 }}>
+            {brief ? `Generated ${brief.generatedAt.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })}` : "Claude synthesizes all signals into a strategic read on the search."}
           </div>
-        ))}
+        </div>
+        <button onClick={generateBrief} disabled={loading} style={{
+          display: "flex", alignItems: "center", gap: 6, padding: "10px 16px", borderRadius: 8,
+          border: "none", background: loading ? "#E0E0E0" : "#1B2A4A", color: loading ? "#AAA" : "#FFF",
+          fontSize: 12, fontWeight: 700, cursor: loading ? "not-allowed" : "pointer", fontFamily: "inherit",
+          flexShrink: 0
+        }}>
+          {loading ? <><Spinner size={12} color="#AAA" /><span>Generating…</span></> : brief ? "↻ Refresh Brief" : "Generate Brief"}
+        </button>
       </div>
 
-      {/* City distribution */}
-      {cities.length > 0 && (
-        <div style={{ background: "#FFF", border: "1.5px solid #E4E4E4", borderRadius: 10, padding: "16px 18px" }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A", marginBottom: 14 }}>City Focus</div>
-          {cities.map(([city, count]) => (
-            <Bar key={city} label={city} value={count} max={cities[0][1]} color="#1D6A72" />
-          ))}
-          <div style={{ fontSize: 11, color: "#AAA", marginTop: 8 }}>
-            {topCity} is driving the search — scans are being weighted toward this city.
-          </div>
-        </div>
+      {error && (
+        <div style={{ background: "#FDF0F0", border: "1.5px solid #E8B4B0", borderRadius: 8, padding: "12px 16px", fontSize: 13, color: "#A63228" }}>{error}</div>
       )}
 
-      {/* Category distribution */}
-      {cats.length > 0 && (
-        <div style={{ background: "#FFF", border: "1.5px solid #E4E4E4", borderRadius: 10, padding: "16px 18px" }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A", marginBottom: 14 }}>Category Focus</div>
-          {cats.map(([cat, count]) => (
-            <Bar key={cat} label={cat} value={count} max={cats[0][1]} color="#1E6B3C" />
-          ))}
-        </div>
-      )}
-
-      {/* Relevance breakdown */}
-      <div style={{ background: "#FFF", border: "1.5px solid #E4E4E4", borderRadius: 10, padding: "16px 18px" }}>
-        <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A", marginBottom: 14 }}>Relevance Breakdown</div>
-        <div style={{ display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 10 }}>
-          {[
-            { label: "High", value: relCount.High, color: "#1E6B3C", bg: "#EAF4EE" },
-            { label: "Medium", value: relCount.Medium, color: "#B8732A", bg: "#FDF3E3" },
-            { label: "Low", value: relCount.Low, color: "#888", bg: "#F0F0F0" },
-          ].map(r => (
-            <div key={r.label} style={{ background: r.bg, borderRadius: 8, padding: "12px 14px", textAlign: "center" }}>
-              <div style={{ fontSize: 22, fontWeight: 800, color: r.color, fontFamily: "monospace" }}>{r.value}</div>
-              <div style={{ fontSize: 11, color: "#888" }}>{r.label}</div>
+      {/* Brief sections */}
+      {brief && (
+        <>
+          {/* Profile */}
+          <Section title="Current Profile" headline={brief.profile.headline} accent="#1B2A4A" accentBg="#F0F3F8">
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Cities</div>
+              {brief.profile.cities.map(c => <Tag key={c} label={c} color="#1D6A72" bg="#E8F4F5" />)}
             </div>
-          ))}
-        </div>
-      </div>
-
-      {/* Top orgs */}
-      {topOrgs.length > 0 && (
-        <div style={{ background: "#FFF", border: "1.5px solid #E4E4E4", borderRadius: 10, padding: "16px 18px" }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A", marginBottom: 14 }}>Most Active Orgs</div>
-          {topOrgs.map(([org, count]) => (
-            <div key={org} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: "1px solid #F4F4F4" }}>
-              <div style={{ flex: 1, fontSize: 13, color: "#333", fontWeight: 600 }}>{org}</div>
-              <div style={{ fontSize: 12, fontWeight: 800, color: "#1D6A72", background: "#E8F4F5", padding: "2px 8px", borderRadius: 4 }}>{count} role{count > 1 ? "s" : ""}</div>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Cause Areas</div>
+              {brief.profile.causes.map(c => <Tag key={c} label={c} color="#5B4DB8" bg="#F0EEFF" />)}
             </div>
-          ))}
-        </div>
-      )}
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Role Types Landing</div>
+              {brief.profile.roleTypes.map(r => <Tag key={r} label={r} color="#B8732A" bg="#FDF3E3" />)}
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Org Types</div>
+              {brief.profile.orgTypes.map(o => <Tag key={o} label={o} color="#1B2A4A" bg="#F0F3F8" />)}
+            </div>
+            <div style={{ fontSize: 13, color: "#444", lineHeight: 1.7, borderTop: "1px solid #F0F0F0", paddingTop: 12 }}>{brief.profile.summary}</div>
+          </Section>
 
-      {/* Source performance — prioritization / deprioritization */}
-      {(Object.keys(orgPerf || {}).length > 0 || Object.keys(broaderPerf || {}).length > 0) && (
-        <div style={{ background: "#FFF", border: "1.5px solid #E4E4E4", borderRadius: 10, padding: "16px 18px" }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: "#1B2A4A", marginBottom: 4 }}>Source Performance</div>
-          <div style={{ fontSize: 11, color: "#999", marginBottom: 12, lineHeight: 1.5 }}>
-            Orgs and searches are automatically prioritized or deprioritized based on starred roles versus empty or ignored scans. Nothing is ever removed — low-yield sources just sink to the bottom of their list.
-          </div>
-          {(() => {
-            const orgRows = Object.entries(orgPerf || {}).map(([id, p]) => ({ id, name: TARGET_ORGS.find(o => o.id === id)?.name || id, ...p, kind: "Org" }));
-            const searchRows = Object.entries(broaderPerf || {}).map(([id, p]) => ({ id, name: BROADER_SEARCHES.find(s => s.id === id)?.label || id, ...p, kind: "Search" }));
-            const allRows = [...orgRows, ...searchRows].sort((a,b) => b.score - a.score);
-            if (!allRows.length) return null;
-            return allRows.map(row => {
-              const bucket = perfBucket(row.score);
-              const cfg = BUCKET_CFG[bucket];
-              return (
-                <div key={row.kind + row.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "7px 0", borderBottom: "1px solid #F4F4F4" }}>
-                  <div style={{ flex: 1, fontSize: 13, color: "#333", fontWeight: 600 }}>{row.name}</div>
-                  <div style={{ fontSize: 10, color: "#AAA" }}>{row.kind}</div>
-                  <div style={{ fontSize: 11, color: "#888" }}>{row.rolesStarred || 0} starred · {row.rolesShown || 0} shown{row.zeroScans ? ` · ${row.zeroScans} empty` : ""}</div>
-                  <span style={{ fontSize: 10, fontWeight: 800, color: cfg.color, background: cfg.bg, padding: "2px 8px", borderRadius: 4 }}>{cfg.label}</span>
+          {/* What's changing */}
+          <Section title="What's Changing" headline={brief.changing.headline} accent="#1E6B3C" accentBg="#EAF4EE">
+            <div style={{ display: "flex", flexDirection: "column", gap: 10, marginBottom: 14 }}>
+              {brief.changing.trends.map((t, i) => (
+                <div key={i} style={{ display: "flex", gap: 10, alignItems: "flex-start" }}>
+                  <span style={{ fontSize: 14, fontWeight: 800, color: directionColor(t.direction), flexShrink: 0, marginTop: 1 }}>{directionIcon(t.direction)}</span>
+                  <div>
+                    <div style={{ fontSize: 12, fontWeight: 800, color: "#333" }}>{t.label}</div>
+                    <div style={{ fontSize: 12, color: "#666", lineHeight: 1.5, marginTop: 2 }}>{t.detail}</div>
+                  </div>
                 </div>
-              );
-            });
-          })()}
-        </div>
-      )}
-
-      {/* Learned orgs */}
-      {learnedOrgs.length > 0 && (
-        <div style={{ background: "#F0EEFF", border: "1.5px solid #5B4DB8", borderRadius: 10, padding: "16px 18px" }}>
-          <div style={{ fontSize: 13, fontWeight: 800, color: "#5B4DB8", marginBottom: 6 }}>Orgs Discovered via Saved Roles</div>
-          <div style={{ fontSize: 12, color: "#777", marginBottom: 12, lineHeight: 1.5 }}>
-            These organisations surfaced through broader searches or user-submitted postings. They've been added to your learning signals.
-          </div>
-          {learnedOrgs.map(o => (
-            <div key={o.id} style={{ display: "flex", alignItems: "center", gap: 10, padding: "6px 0", borderBottom: "1px solid #E4DCFF" }}>
-              <div style={{ flex: 1, fontSize: 13, color: "#333", fontWeight: 600 }}>{o.name}</div>
-              <div style={{ fontSize: 11, color: "#5B4DB8" }}>{o.city} · {o.category}</div>
+              ))}
             </div>
-          ))}
-        </div>
+            <div style={{ fontSize: 13, color: "#444", lineHeight: 1.7, borderTop: "1px solid #F0F0F0", paddingTop: 12 }}>{brief.changing.summary}</div>
+          </Section>
+
+          {/* What the system will do next */}
+          <Section title="What Happens Next" headline={brief.nextActions.headline} accent="#5B4DB8" accentBg="#F0EEFF">
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>Scan Priorities</div>
+              {brief.nextActions.scanPriorities.map(p => <Tag key={p} label={p} color="#5B4DB8" bg="#F0EEFF" />)}
+            </div>
+            <div style={{ marginBottom: 12 }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Search Adjustments</div>
+              {brief.nextActions.searchAdjustments.map((a, i) => (
+                <div key={i} style={{ fontSize: 12, color: "#555", lineHeight: 1.5, marginBottom: 6, paddingLeft: 10, borderLeft: "2px solid #4DADA3" }}>{a}</div>
+              ))}
+            </div>
+            <div style={{ marginBottom: 14 }}>
+              <div style={{ fontSize: 10, fontWeight: 800, color: "#999", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>Gaps to Explore</div>
+              {brief.nextActions.gaps.map((g, i) => (
+                <div key={i} style={{ fontSize: 12, color: "#555", lineHeight: 1.5, marginBottom: 6, paddingLeft: 10, borderLeft: "2px solid #F5C842" }}>{g}</div>
+              ))}
+            </div>
+            <div style={{ fontSize: 13, color: "#444", lineHeight: 1.7, borderTop: "1px solid #F0F0F0", paddingTop: 12 }}>{brief.nextActions.summary}</div>
+          </Section>
+
+          {/* Last updated */}
+          <div style={{ textAlign: "center", fontSize: 11, color: "#BBB", paddingBottom: 8 }}>
+            Based on {signals.length} signals · {savedList.length} saved roles · {learnedOrgs.length} learned orgs
+          </div>
+        </>
       )}
 
-      {/* Adaptive context preview */}
-      {signals.length > 0 && (
-        <div style={{ background: "#1B2A4A", borderRadius: 10, padding: "14px 16px" }}>
-          <div style={{ fontSize: 11, fontWeight: 800, color: "#4DADA3", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>
-            Active Learning Signal ({signals.length} signals)
-          </div>
-          <div style={{ fontSize: 12, color: "#7A9CC4", lineHeight: 1.6 }}>
-            Next scan will be weighted toward <strong style={{ color: "#FFF" }}>{topCity}</strong> and <strong style={{ color: "#FFF" }}>{topCat}</strong> based on your saved roles. Relevance scoring is being calibrated to your actual selections.
+      {/* Empty state before first generate */}
+      {!brief && !loading && (
+        <div style={{ background: "#F7F8FA", border: "1.5px dashed #DDD", borderRadius: 12, padding: "32px 24px", textAlign: "center" }}>
+          <div style={{ fontSize: 28, marginBottom: 10 }}>🧭</div>
+          <div style={{ fontSize: 13, fontWeight: 700, color: "#555", marginBottom: 6 }}>Ready to generate your brief</div>
+          <div style={{ fontSize: 12, color: "#999", lineHeight: 1.6, maxWidth: 320, margin: "0 auto" }}>
+            Claude will synthesize {signals.length} signal{signals.length !== 1 ? "s" : ""} and {savedList.length} saved role{savedList.length !== 1 ? "s" : ""} into a strategic read on where Bella's search stands, what's shifting, and what to focus on next.
           </div>
         </div>
       )}
@@ -1627,7 +1690,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v24 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v25 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
