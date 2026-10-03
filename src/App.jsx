@@ -110,10 +110,12 @@ async function removeRole(id) {
 }
 
 async function dismissRole(id, title, org, reason) {
-  const { error } = await supabase.from("dismissed_roles").upsert({
-    id, title, org, reason: reason || null, dismissed_at: new Date().toISOString()
-  });
-  if (error) console.error("dismissRole:", error);
+  try {
+    const { error } = await supabase.from("dismissed_roles").upsert({
+      id, title, org, reason: reason || null, dismissed_at: new Date().toISOString()
+    });
+    if (error) console.error("dismissRole DB error:", error);
+  } catch(e) { console.error("dismissRole exception:", e); }
 }
 
 async function loadDismissedRoles() {
@@ -734,8 +736,10 @@ function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptive
   }, [setSavedRoles, setLearnedOrgs]);
 
   const handleDismiss = useCallback(async (roleId, title, orgName, reason) => {
-    await dismissRole(roleId, title, orgName, reason);
-    await fireSignal({ id: roleId, title, relevance: "Low" }, orgName, "thumb_down");
+    try {
+      await dismissRole(roleId, title, orgName, reason);
+      fireSignal({ id: roleId, title, relevance: "Low" }, orgName, "thumb_down").catch(e => console.error("fireSignal in dismiss:", e));
+    } catch(e) { console.error("handleDismiss error:", e); }
     setDismissedRoles(prev => new Set([...prev, roleId]));
   }, [setDismissedRoles]);
 
@@ -758,9 +762,14 @@ Search these sources:
 Be inclusive — include any open role at this org regardless of exact title. Coordinator, Associate, Specialist, Officer, Manager all count. If the org has a careers page, check it directly.
 
 URL RULES:
-- directUrl = specific job posting URL (Workday/Greenhouse/Lever/org site), never a LinkedIn company profile
-- linkedInUrl = LinkedIn jobs search URL like ${liUrl}
-- If no direct URL found, set directUrl to null
+- directUrl = URL for the SPECIFIC INDIVIDUAL JOB POSTING, not a search results page or careers home page
+  WRONG: https://careers.northwestern.edu/psc/hrnu_er/.../HRS_CG_SEARCH_FL (search page)
+  RIGHT: https://careers.northwestern.edu/psp/hrnu_er/.../HRS_APP_JBPST_FL&JobOpeningId=54580 (posting page)
+  WRONG: https://www.linkedin.com/company/northwestern-university (company page)
+  RIGHT: https://www.linkedin.com/jobs/view/1234567 (job posting page)
+  If you can only find a search/careers page and not the specific posting URL, set directUrl to null — do not use the search page
+- linkedInUrl = LinkedIn jobs search URL like ${liUrl}, never a company profile page
+- If no specific posting URL found, set directUrl to null — better null than a wrong URL
 
 Return JSON:
 {
@@ -779,7 +788,7 @@ Return JSON:
       "whyFit": "1 sentence specific to Bella",
       "linkedInUrl": "${liUrl}",
       "idealistUrl": "${idUrl}",
-      "directUrl": "specific job posting URL or null"
+      "directUrl": "URL to the specific individual job posting page — NOT a search page or careers home. Set null if you only have a search/listing page URL"
     }
   ],
   "hiringCycleNote": "One sentence on hiring cycle or upcoming openings"
@@ -969,8 +978,10 @@ function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, ad
   }, [setSavedRoles, setLearnedOrgs]);
 
   const handleDismiss = useCallback(async (roleId, title, orgName, reason) => {
-    await dismissRole(roleId, title, orgName, reason);
-    await fireSignal({ id: roleId, title, relevance: "Low" }, orgName, "thumb_down");
+    try {
+      await dismissRole(roleId, title, orgName, reason);
+      fireSignal({ id: roleId, title, relevance: "Low" }, orgName, "thumb_down").catch(e => console.error("fireSignal in dismiss:", e));
+    } catch(e) { console.error("handleDismiss error:", e); }
     setDismissedRoles(prev => new Set([...prev, roleId]));
   }, [setDismissedRoles]);
 
@@ -1252,7 +1263,7 @@ function SavedRoleRow({ role, onRemove, signals, onDismiss, setSavedRoles }) {
   );
 }
 
-function SavedPanel({ savedRoles, setSavedRoles, signals }) {
+function SavedPanel({ savedRoles, setSavedRoles, signals, dismissedRoles, setDismissedRoles }) {
   const [showExport, setShowExport] = useState(false);
   const [exportText, setExportText] = useState("");
 
@@ -1267,16 +1278,19 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
   }, [setSavedRoles]);
 
   const handleDismiss = useCallback(async (roleId, title, orgName, reason) => {
-    await dismissRole(roleId, title, orgName, reason);
-    await fireSignal({ id: roleId, title, relevance: "Low" }, orgName, "thumb_down");
-    await removeRole(roleId);
+    try {
+      await dismissRole(roleId, title, orgName, reason);
+      fireSignal({ id: roleId, title, relevance: "Low" }, orgName, "thumb_down").catch(e => console.error("fireSignal in dismiss:", e));
+      await removeRole(roleId);
+    } catch(e) { console.error("handleDismiss error:", e); }
+    // Always update local state even if DB fails
     setSavedRoles(prev => { const { [roleId]: _, ...rest } = prev; return rest; });
     setDismissedRoles(prev => new Set([...prev, roleId]));
   }, [setSavedRoles, setDismissedRoles]);
 
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v42", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v45", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -2231,7 +2245,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v42 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v45 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
