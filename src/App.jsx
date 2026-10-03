@@ -109,6 +109,27 @@ async function removeRole(id) {
   catch(e) { console.error("removeRole:", e); }
 }
 
+async function dismissRole(id, title, org, reason) {
+  const { error } = await supabase.from("dismissed_roles").upsert({
+    id, title, org, reason: reason || null, dismissed_at: new Date().toISOString()
+  });
+  if (error) console.error("dismissRole:", error);
+}
+
+async function loadDismissedRoles() {
+  try {
+    const { data } = await supabase.from("dismissed_roles").select("id, title, org");
+    return data || [];
+  } catch(e) { console.error("loadDismissedRoles:", e); return []; }
+}
+
+async function logEmailSent(roleId) {
+  const { error } = await supabase.from("saved_roles")
+    .update({ emailed_at: new Date().toISOString() })
+    .eq("id", roleId);
+  if (error) console.error("logEmailSent:", error);
+}
+
 async function loadSavedRoles() {
   try {
     const { data } = await supabase.from("saved_roles").select("*").order("saved_at", { ascending: false });
@@ -118,7 +139,8 @@ async function loadSavedRoles() {
       category: row.category, location: row.location, type: row.type,
       relevance: row.relevance, deadline: row.deadline, whyFit: row.why_fit,
       directUrl: row.direct_url, linkedInUrl: row.linkedin_url, idealistUrl: row.idealist_url,
-      source: row.source || "starred", savedAt: row.saved_at
+      source: row.source || "starred", savedAt: row.saved_at,
+      emailedAt: row.emailed_at || null
     }]));
   } catch(e) { console.error("loadSavedRoles:", e); return {}; }
 }
@@ -501,7 +523,7 @@ function RelBadge({ rel }) {
 }
 
 // Compact role row — clickable title links to posting, star to save
-function ThumbBar({ roleId, orgName, signals }) {
+function ThumbBar({ roleId, orgName, role, signals, onDismiss }) {
   // Initialize from persisted signal if one exists for this role
   const existing = (signals || []).find(s => s.id === "thumb-" + roleId);
   const [thumb, setThumb] = useState(existing?.thumb || null);
@@ -510,7 +532,7 @@ function ThumbBar({ roleId, orgName, signals }) {
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
 
-  // Sync if signals load after initial render (e.g. on mount)
+  // Sync if signals load after initial render
   useEffect(() => {
     if (existing && !editing) {
       setThumb(existing.thumb || null);
@@ -521,21 +543,33 @@ function ThumbBar({ roleId, orgName, signals }) {
   const handleThumb = (val) => {
     const next = thumb === val ? null : val;
     setThumb(next);
-    setEditing(true);
+    setEditing(true); // Always open note field — require Save before committing
     setSaved(false);
   };
 
   const handleSubmit = async () => {
     if (!thumb) return;
     setSaving(true);
+
+    // Fire signal for both up and down
     await submitThumb(roleId, orgName, thumb, notes);
+
+    // Thumb down: dismiss after signal is saved
+    if (thumb === "down" && onDismiss) {
+      await onDismiss(roleId, role?.title || "", orgName, notes);
+    }
+
     setSaving(false);
-    setSaved(true);
-    setEditing(false);
-    setTimeout(() => setSaved(false), 2000);
+    if (thumb !== "down") {
+      // Thumb up: stay visible, show confirmation
+      setSaved(true);
+      setEditing(false);
+      setTimeout(() => setSaved(false), 2000);
+    }
+    // Thumb down: onDismiss will remove the role from view — no need to update local state
   };
 
-  const isLogged = !editing && !!thumb;
+  const isLogged = !editing && !!thumb && thumb !== "down";
 
   return (
     <div style={{ marginTop: 4 }}>
@@ -546,14 +580,13 @@ function ThumbBar({ roleId, orgName, signals }) {
           color: thumb === "up" ? "#1E6B3C" : "#BBB", transition: "all 0.15s",
           opacity: isLogged && thumb !== "up" ? 0.35 : 1
         }}>👍</button>
-        <button onClick={() => handleThumb("down")} title="Not a fit" style={{
+        <button onClick={() => handleThumb("down")} title="Not a fit — will be dismissed after you save" style={{
           background: thumb === "down" ? "#FDF0F0" : "none", border: "none", cursor: "pointer",
           fontSize: 14, padding: "2px 5px", borderRadius: 4, lineHeight: 1,
-          color: thumb === "down" ? "#A63228" : "#BBB", transition: "all 0.15s",
-          opacity: isLogged && thumb !== "down" ? 0.35 : 1
+          color: thumb === "down" ? "#A63228" : "#BBB", transition: "all 0.15s"
         }}>👎</button>
 
-        {/* Saved state: show note preview + edit link */}
+        {/* Logged thumb-up: show note preview + edit */}
         {isLogged && notes && (
           <span style={{ fontSize: 10, color: "#888", flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
             "{notes}"
@@ -566,26 +599,29 @@ function ThumbBar({ roleId, orgName, signals }) {
           }}>Edit</button>
         )}
 
-        {/* Editing state: note input + send */}
+        {/* Editing state — required before Save fires any action */}
         {editing && thumb && (
           <>
             <input
               value={notes}
               onChange={e => setNotes(e.target.value)}
-              placeholder="Optional note…"
+              placeholder={thumb === "down" ? "Reason (will dismiss role)…" : "Optional note…"}
               autoFocus
               onKeyDown={e => e.key === "Enter" && handleSubmit()}
               style={{
                 flex: 1, fontSize: 11, padding: "3px 7px", borderRadius: 4,
-                border: "1px solid #DDD", fontFamily: "inherit", outline: "none",
-                color: "#333", background: "#FAFAFA"
+                border: `1px solid ${thumb === "down" ? "#E8B4B0" : "#DDD"}`,
+                fontFamily: "inherit", outline: "none",
+                color: "#333", background: thumb === "down" ? "#FDF8F8" : "#FAFAFA"
               }}
             />
             <button onClick={handleSubmit} disabled={saving} style={{
               fontSize: 10, fontWeight: 800, padding: "3px 8px", borderRadius: 4,
-              border: "none", background: "#1B2A4A", color: "#FFF", cursor: "pointer", fontFamily: "inherit",
+              border: "none",
+              background: thumb === "down" ? "#A63228" : "#1B2A4A",
+              color: "#FFF", cursor: "pointer", fontFamily: "inherit",
               opacity: saving ? 0.6 : 1
-            }}>{saving ? "…" : "Save"}</button>
+            }}>{saving ? "…" : thumb === "down" ? "Dismiss" : "Save"}</button>
             <button onClick={() => { setEditing(false); setThumb(existing?.thumb || null); setNotes(existing?.notes || ""); }} style={{
               fontSize: 10, color: "#AAA", background: "none", border: "none", cursor: "pointer", fontFamily: "inherit"
             }}>✕</button>
@@ -598,8 +634,9 @@ function ThumbBar({ roleId, orgName, signals }) {
   );
 }
 
-function RoleRow({ role, orgName, isSaved, onToggleSave, signals }) {
+function RoleRow({ role, orgName, isSaved, onToggleSave, signals, onDismiss }) {
   const postingUrl = role.directUrl || role.linkedInUrl || role.idealistUrl || null;
+  const isDeadlinePast = role.deadline && new Date(role.deadline) < new Date();
   return (
     <div style={{ padding: "8px 0", borderBottom: "1px solid #F4F4F4" }}>
       <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
@@ -612,12 +649,12 @@ function RoleRow({ role, orgName, isSaved, onToggleSave, signals }) {
             <div style={{ fontSize: 13, fontWeight: 700, color: "#1B2A4A", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>{role.title}</div>
           )}
           <div style={{ fontSize: 11, color: "#888" }}>{orgName || role.org}{role.location ? ` · ${role.location}` : ""}{role.type ? ` · ${role.type}` : ""}</div>
-          {role.deadline && <div style={{ fontSize: 10, color: "#A63228", fontWeight: 700, marginTop: 1 }}>⏱ {role.deadline}</div>}
+          {role.deadline && <div style={{ fontSize: 10, color: isDeadlinePast ? "#CCC" : "#A63228", fontWeight: 700, marginTop: 1 }}>{isDeadlinePast ? "⚠ Expired " : "⏱ "}{role.deadline}</div>}
         </div>
         <RelBadge rel={role.relevance} />
         <button onClick={onToggleSave} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18, color: isSaved ? "#F5C842" : "#CCC", transition: "color 0.15s", flexShrink: 0, lineHeight: 1 }}>{isSaved ? "★" : "☆"}</button>
       </div>
-      <ThumbBar roleId={role.id} orgName={orgName || role.org} signals={signals} />
+      <ThumbBar roleId={role.id} role={role} orgName={orgName || role.org} signals={signals} onDismiss={onDismiss} />
     </div>
   );
 }
@@ -643,7 +680,7 @@ function useGlobalStats(orgResults, broaderResults, savedRoles, learnedOrgs, org
 // ─────────────────────────────────────────────────────────────────────────────
 // ORG SCAN PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, learnedOrgs, setLearnedOrgs, orgPerf, signals }) {
+function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, learnedOrgs, setLearnedOrgs, orgPerf, signals, dismissedRoles, setDismissedRoles }) {
   const [scanning, setScanning] = useState({});
   const [cityFilter, setCityFilter] = useState("All");
   const [scanningAll, setScanningAll] = useState(false);
@@ -695,6 +732,12 @@ function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptive
       setSavedRoles(prev => { const { [roleId]: _, ...rest } = prev; return rest; });
     }
   }, [setSavedRoles, setLearnedOrgs]);
+
+  const handleDismiss = useCallback(async (roleId, title, orgName, reason) => {
+    await dismissRole(roleId, title, orgName, reason);
+    await fireSignal({ id: roleId, title, relevance: "Low" }, orgName, "thumb_down");
+    setDismissedRoles(prev => new Set([...prev, roleId]));
+  }, [setDismissedRoles]);
 
   const scanOrg = async (org) => {
     setScanning(p => ({ ...p, [org.id]: true }));
@@ -852,16 +895,19 @@ Return JSON:
             {/* Roles — compact rows */}
             {!isScanning && roles.length > 0 && (
               <div style={{ padding: "4px 14px 8px" }}>
-                {roles.map(role => (
-                  <RoleRow
-                    key={role.id}
-                    role={role}
-                    orgName={org.name}
-                    isSaved={!!savedRoles[role.id]}
-                    onToggleSave={() => handleSave(role.id, role, org.name, !savedRoles[role.id])}
-                    signals={signals}
-                  />
-                ))}
+                {roles
+                  .filter(role => !dismissedRoles?.has(role.id) && !savedRoles[role.id])
+                  .map(role => (
+                    <RoleRow
+                      key={role.id}
+                      role={role}
+                      orgName={org.name}
+                      isSaved={false}
+                      onToggleSave={() => handleSave(role.id, role, org.name, true)}
+                      signals={signals}
+                      onDismiss={handleDismiss}
+                    />
+                  ))}
               </div>
             )}
 
@@ -882,7 +928,7 @@ Return JSON:
 // ─────────────────────────────────────────────────────────────────────────────
 // BROADER SEARCH PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, broaderPerf, setLearnedOrgs, signals, learnedSearches }) {
+function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, broaderPerf, setLearnedOrgs, signals, learnedSearches, dismissedRoles, setDismissedRoles }) {
   const [running, setRunning] = useState({});
   const [cityFilter, setCityFilter] = useState("All");
   const [runningAll, setRunningAll] = useState(false);
@@ -921,6 +967,12 @@ function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, ad
       setSavedRoles(prev => { const { [roleId]: _, ...rest } = prev; return rest; });
     }
   }, [setSavedRoles, setLearnedOrgs]);
+
+  const handleDismiss = useCallback(async (roleId, title, orgName, reason) => {
+    await dismissRole(roleId, title, orgName, reason);
+    await fireSignal({ id: roleId, title, relevance: "Low" }, orgName, "thumb_down");
+    setDismissedRoles(prev => new Set([...prev, roleId]));
+  }, [setDismissedRoles]);
 
   const runSearch = async (search) => {
     setRunning(p => ({ ...p, [search.id]: true }));
@@ -1074,16 +1126,19 @@ Return JSON:
             {/* Role rows */}
             {!isRunning && roles.length > 0 && (
               <div style={{ padding: "4px 14px 8px" }}>
-                {roles.map(role => (
-                  <RoleRow
-                    key={role.id}
-                    role={{ ...role, orgName: role.org }}
-                    orgName={role.org}
-                    isSaved={!!savedRoles[role.id]}
-                    onToggleSave={() => handleSave(role.id, role, role.org, !savedRoles[role.id])}
-                    signals={signals}
-                  />
-                ))}
+                {roles
+                  .filter(role => !dismissedRoles?.has(role.id) && !savedRoles[role.id])
+                  .map(role => (
+                    <RoleRow
+                      key={role.id}
+                      role={{ ...role, orgName: role.org }}
+                      orgName={role.org}
+                      isSaved={false}
+                      onToggleSave={() => handleSave(role.id, role, role.org, true)}
+                      signals={signals}
+                      onDismiss={handleDismiss}
+                    />
+                  ))}
               </div>
             )}
 
@@ -1130,7 +1185,7 @@ Dad`
   return `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(BELLA_EMAIL)}&su=${subject}&body=${body}`;
 }
 
-function SavedRoleRow({ role, onRemove, signals }) {
+function SavedRoleRow({ role, onRemove, signals, onDismiss, setSavedRoles }) {
   const postingUrl = role.directUrl || role.linkedInUrl || role.idealistUrl || null;
   const emailLink = buildEmailLink(role);
 
@@ -1154,7 +1209,7 @@ function SavedRoleRow({ role, onRemove, signals }) {
         {role.whyFit && (
           <div style={{ fontSize: 11, color: "#666", marginTop: 6, lineHeight: 1.5, fontStyle: "italic" }}>{role.whyFit}</div>
         )}
-        <ThumbBar roleId={role.id} orgName={role.orgName || role.org} signals={signals} />
+        <ThumbBar roleId={role.id} role={role} orgName={role.orgName || role.org} signals={signals} onDismiss={onDismiss} />
       </div>
 
       {/* Action buttons */}
@@ -1173,14 +1228,24 @@ function SavedRoleRow({ role, onRemove, signals }) {
           </div>
         )}
         <button
-          onClick={() => { window.open(emailLink, "_blank"); }}
+          onClick={async () => {
+            window.open(emailLink, "_blank");
+            await logEmailSent(role.id);
+            // Update local state to show sent indicator
+            setSavedRoles && setSavedRoles(prev => ({
+              ...prev,
+              [role.id]: { ...prev[role.id], emailedAt: new Date().toISOString() }
+            }));
+          }}
           style={{
             flex: 1, display: "flex", alignItems: "center", justifyContent: "center", gap: 6,
-            padding: "9px 12px", fontSize: 12, fontWeight: 700, color: "#1B2A4A",
-            background: "#FFF", border: "none", cursor: "pointer", fontFamily: "inherit"
+            padding: "9px 12px", fontSize: 12, fontWeight: 700,
+            color: role.emailedAt ? "#1E6B3C" : "#1B2A4A",
+            background: role.emailedAt ? "#EAF4EE" : "#FFF",
+            border: "none", cursor: "pointer", fontFamily: "inherit"
           }}
         >
-          <span>✉️</span> Email to Bella
+          <span>✉️</span> {role.emailedAt ? `Sent ${new Date(role.emailedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : "Email to Bella"}
         </button>
       </div>
     </div>
@@ -1201,9 +1266,17 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
     setSavedRoles(prev => { const { [roleId]: _, ...rest } = prev; return rest; });
   }, [setSavedRoles]);
 
+  const handleDismiss = useCallback(async (roleId, title, orgName, reason) => {
+    await dismissRole(roleId, title, orgName, reason);
+    await fireSignal({ id: roleId, title, relevance: "Low" }, orgName, "thumb_down");
+    await removeRole(roleId);
+    setSavedRoles(prev => { const { [roleId]: _, ...rest } = prev; return rest; });
+    setDismissedRoles(prev => new Set([...prev, roleId]));
+  }, [setSavedRoles, setDismissedRoles]);
+
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v41", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v42", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -1236,14 +1309,14 @@ function SavedPanel({ savedRoles, setSavedRoles, signals }) {
       {high.length > 0 && (
         <>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#1E6B3C", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>High Relevance</div>
-          {high.map(r => <SavedRoleRow key={r.id} role={r} onRemove={() => handleRemove(r.id)} signals={signals} />)}
+          {high.map(r => !dismissedRoles?.has(r.id) && <SavedRoleRow key={r.id} role={r} onRemove={() => handleRemove(r.id)} signals={signals} onDismiss={handleDismiss} setSavedRoles={setSavedRoles} />)}
         </>
       )}
 
       {other.length > 0 && (
         <>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#888", textTransform: "uppercase", letterSpacing: "0.06em", margin: "14px 0 8px" }}>Other Saved</div>
-          {other.map(r => <SavedRoleRow key={r.id} role={r} onRemove={() => handleRemove(r.id)} signals={signals} />)}
+          {other.map(r => !dismissedRoles?.has(r.id) && <SavedRoleRow key={r.id} role={r} onRemove={() => handleRemove(r.id)} signals={signals} onDismiss={handleDismiss} setSavedRoles={setSavedRoles} />)}
         </>
       )}
 
@@ -1997,20 +2070,22 @@ export default function App() {
   const [learnedOrgs, setLearnedOrgs] = useState([]);
   const [briefs, setBriefs] = useState([]);
   const [learnedSearches, setLearnedSearches] = useState([]);
+  const [dismissedRoles, setDismissedRoles] = useState(new Set());
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState(null);
 
   useEffect(() => {
     registerApiErrorHandler(setApiError);
     async function init() {
-      const [org, broader, saved, sigs, lorgs, bfs, lsearches] = await Promise.all([
+      const [org, broader, saved, sigs, lorgs, bfs, lsearches, dismissed] = await Promise.all([
         loadScanResults("org"),
         loadScanResults("broader"),
         loadSavedRoles(),
         loadFeedbackSignals(),
         loadLearnedOrgs(),
         loadBriefs(),
-        loadLearnedSearches()
+        loadLearnedSearches(),
+        loadDismissedRoles()
       ]);
       setOrgResults(org);
       setBroaderResults(broader);
@@ -2019,6 +2094,7 @@ export default function App() {
       setLearnedOrgs(lorgs);
       setBriefs(bfs);
       setLearnedSearches(lsearches);
+      setDismissedRoles(new Set((dismissed || []).map(r => r.id)));
       setLoading(false);
     }
     init();
@@ -2117,6 +2193,7 @@ export default function App() {
             adaptiveContext={fullAdaptiveContext}
             learnedOrgs={learnedOrgs} setLearnedOrgs={setLearnedOrgs}
             orgPerf={orgPerf} signals={signals}
+            dismissedRoles={dismissedRoles} setDismissedRoles={setDismissedRoles}
           />
         )}
         {tab === "broader" && (
@@ -2126,10 +2203,13 @@ export default function App() {
             adaptiveContext={fullAdaptiveContext}
             broaderPerf={broaderPerf} setLearnedOrgs={setLearnedOrgs} signals={signals}
             learnedSearches={learnedSearches}
+            dismissedRoles={dismissedRoles} setDismissedRoles={setDismissedRoles}
           />
         )}
         {tab === "saved" && (
-          <SavedPanel savedRoles={savedRoles} setSavedRoles={setSavedRoles} signals={signals} />
+          <SavedPanel savedRoles={savedRoles} setSavedRoles={setSavedRoles} signals={signals}
+            dismissedRoles={dismissedRoles} setDismissedRoles={setDismissedRoles}
+          />
         )}
         {tab === "add" && (
           <AddPostingPanel
@@ -2151,7 +2231,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v41 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v42 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
