@@ -118,6 +118,23 @@ async function dismissRole(id, title, org, reason) {
   } catch(e) { console.error("dismissRole exception:", e); }
 }
 
+async function closeRole(id, title, org) {
+  try {
+    await supabase.from("saved_roles").update({ status: "closed" }).eq("id", id);
+    const { error } = await supabase.from("closed_roles").upsert({
+      id, title, org, closed_at: new Date().toISOString()
+    });
+    if (error) console.error("closeRole:", error);
+  } catch(e) { console.error("closeRole exception:", e); }
+}
+
+async function loadClosedRoles() {
+  try {
+    const { data } = await supabase.from("closed_roles").select("id, title, org");
+    return data || [];
+  } catch(e) { console.error("loadClosedRoles:", e); return []; }
+}
+
 async function loadDismissedRoles() {
   try {
     const { data } = await supabase.from("dismissed_roles").select("id, title, org");
@@ -636,7 +653,7 @@ function ThumbBar({ roleId, orgName, role, signals, onDismiss }) {
   );
 }
 
-function RoleRow({ role, orgName, isSaved, onToggleSave, signals, onDismiss }) {
+function RoleRow({ role, orgName, isSaved, onToggleSave, signals, onDismiss, onClose }) {
   const postingUrl = role.directUrl || role.linkedInUrl || role.idealistUrl || null;
   const isDeadlinePast = role.deadline && new Date(role.deadline) < new Date();
   return (
@@ -655,6 +672,7 @@ function RoleRow({ role, orgName, isSaved, onToggleSave, signals, onDismiss }) {
         </div>
         <RelBadge rel={role.relevance} />
         <button onClick={onToggleSave} style={{ background: "none", border: "none", cursor: "pointer", fontSize: 18, color: isSaved ? "#F5C842" : "#CCC", transition: "color 0.15s", flexShrink: 0, lineHeight: 1 }}>{isSaved ? "★" : "☆"}</button>
+        {onClose && <button onClick={() => onClose(role.id, role.title, orgName || role.org)} title="Mark posting as closed" style={{ background: "none", border: "none", cursor: "pointer", fontSize: 11, color: "#BBB", flexShrink: 0, fontFamily: "inherit", padding: "2px 4px" }}>✕</button>}
       </div>
       <ThumbBar roleId={role.id} role={role} orgName={orgName || role.org} signals={signals} onDismiss={onDismiss} />
     </div>
@@ -682,7 +700,7 @@ function useGlobalStats(orgResults, broaderResults, savedRoles, learnedOrgs, org
 // ─────────────────────────────────────────────────────────────────────────────
 // ORG SCAN PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, learnedOrgs, setLearnedOrgs, orgPerf, signals, dismissedRoles, setDismissedRoles }) {
+function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, learnedOrgs, setLearnedOrgs, orgPerf, signals, dismissedRoles, setDismissedRoles, closedRoles, setClosedRoles }) {
   const [scanning, setScanning] = useState({});
   const [cityFilter, setCityFilter] = useState("All");
   const [scanningAll, setScanningAll] = useState(false);
@@ -742,6 +760,11 @@ function OrgScanPanel({ results, setResults, savedRoles, setSavedRoles, adaptive
     } catch(e) { console.error("handleDismiss error:", e); }
     setDismissedRoles(prev => new Set([...prev, roleId]));
   }, [setDismissedRoles]);
+
+  const handleClose = useCallback(async (roleId, title, orgName) => {
+    await closeRole(roleId, title, orgName);
+    setClosedRoles(prev => new Set([...prev, roleId]));
+  }, [setClosedRoles]);
 
   const scanOrg = async (org) => {
     setScanning(p => ({ ...p, [org.id]: true }));
@@ -905,7 +928,7 @@ Return JSON:
             {!isScanning && roles.length > 0 && (
               <div style={{ padding: "4px 14px 8px" }}>
                 {roles
-                  .filter(role => !dismissedRoles?.has(role.id) && !savedRoles[role.id])
+                  .filter(role => !dismissedRoles?.has(role.id) && !savedRoles[role.id] && !closedRoles?.has(role.id))
                   .map(role => (
                     <RoleRow
                       key={role.id}
@@ -915,6 +938,7 @@ Return JSON:
                       onToggleSave={() => handleSave(role.id, role, org.name, true)}
                       signals={signals}
                       onDismiss={handleDismiss}
+                      onClose={handleClose}
                     />
                   ))}
               </div>
@@ -937,7 +961,7 @@ Return JSON:
 // ─────────────────────────────────────────────────────────────────────────────
 // BROADER SEARCH PANEL
 // ─────────────────────────────────────────────────────────────────────────────
-function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, broaderPerf, setLearnedOrgs, signals, learnedSearches, dismissedRoles, setDismissedRoles }) {
+function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, adaptiveContext, broaderPerf, setLearnedOrgs, signals, learnedSearches, dismissedRoles, setDismissedRoles, closedRoles, setClosedRoles }) {
   const [running, setRunning] = useState({});
   const [cityFilter, setCityFilter] = useState("All");
   const [runningAll, setRunningAll] = useState(false);
@@ -984,6 +1008,11 @@ function BroaderSearchPanel({ results, setResults, savedRoles, setSavedRoles, ad
     } catch(e) { console.error("handleDismiss error:", e); }
     setDismissedRoles(prev => new Set([...prev, roleId]));
   }, [setDismissedRoles]);
+
+  const handleClose = useCallback(async (roleId, title, orgName) => {
+    await closeRole(roleId, title, orgName);
+    setClosedRoles(prev => new Set([...prev, roleId]));
+  }, [setClosedRoles]);
 
   const runSearch = async (search) => {
     setRunning(p => ({ ...p, [search.id]: true }));
@@ -1138,7 +1167,7 @@ Return JSON:
             {!isRunning && roles.length > 0 && (
               <div style={{ padding: "4px 14px 8px" }}>
                 {roles
-                  .filter(role => !dismissedRoles?.has(role.id) && !savedRoles[role.id])
+                  .filter(role => !dismissedRoles?.has(role.id) && !savedRoles[role.id] && !closedRoles?.has(role.id))
                   .map(role => (
                     <RoleRow
                       key={role.id}
@@ -1148,6 +1177,7 @@ Return JSON:
                       onToggleSave={() => handleSave(role.id, role, role.org, true)}
                       signals={signals}
                       onDismiss={handleDismiss}
+                      onClose={handleClose}
                     />
                   ))}
               </div>
@@ -1196,7 +1226,7 @@ Dad`
   return `https://mail.google.com/mail/?view=cm&to=${encodeURIComponent(BELLA_EMAIL)}&su=${subject}&body=${body}`;
 }
 
-function SavedRoleRow({ role, onRemove, signals, onDismiss, setSavedRoles }) {
+function SavedRoleRow({ role, onRemove, signals, onDismiss, onClose, setSavedRoles }) {
   const postingUrl = role.directUrl || role.linkedInUrl || role.idealistUrl || null;
   const emailLink = buildEmailLink(role);
 
@@ -1258,12 +1288,24 @@ function SavedRoleRow({ role, onRemove, signals, onDismiss, setSavedRoles }) {
         >
           <span>✉️</span> {role.emailedAt ? `Sent ${new Date(role.emailedAt).toLocaleDateString("en-US", { month: "short", day: "numeric" })}` : "Email to Bella"}
         </button>
+        {onClose && (
+          <button onClick={() => onClose(role.id, role.title, role.orgName || role.org)}
+            title="Posting is no longer available — preserves feedback signals"
+            style={{
+              display: "flex", alignItems: "center", justifyContent: "center", gap: 4,
+              padding: "9px 12px", fontSize: 11, fontWeight: 700, color: "#888",
+              background: "#F4F4F4", border: "none", cursor: "pointer", fontFamily: "inherit",
+              borderLeft: "1px solid #ECECEC"
+            }}>
+            ✕ Closed
+          </button>
+        )}
       </div>
     </div>
   );
 }
 
-function SavedPanel({ savedRoles, setSavedRoles, signals, dismissedRoles, setDismissedRoles }) {
+function SavedPanel({ savedRoles, setSavedRoles, signals, dismissedRoles, setDismissedRoles, closedRoles, setClosedRoles }) {
   const [showExport, setShowExport] = useState(false);
   const [exportText, setExportText] = useState("");
 
@@ -1283,14 +1325,19 @@ function SavedPanel({ savedRoles, setSavedRoles, signals, dismissedRoles, setDis
       fireSignal({ id: roleId, title, relevance: "Low" }, orgName, "thumb_down").catch(e => console.error("fireSignal in dismiss:", e));
       await removeRole(roleId);
     } catch(e) { console.error("handleDismiss error:", e); }
-    // Always update local state even if DB fails
     setSavedRoles(prev => { const { [roleId]: _, ...rest } = prev; return rest; });
     setDismissedRoles(prev => new Set([...prev, roleId]));
   }, [setSavedRoles, setDismissedRoles]);
 
+  const handleClose = useCallback(async (roleId, title, orgName) => {
+    await closeRole(roleId, title, orgName);
+    // Keep in savedRoles state but mark closed — remove from view via closedRoles filter
+    setClosedRoles(prev => new Set([...prev, roleId]));
+  }, [setClosedRoles]);
+
   const handleExport = () => {
     const payload = {
-      agentVersion: "1.3b-v45", exportedAt: new Date().toISOString(),
+      agentVersion: "1.3b-v46", exportedAt: new Date().toISOString(),
       savedRoles: savedList.map(r => ({ id: r.id, title: r.title, org: r.orgName || r.org, location: r.location, type: r.type, relevance: r.relevance, deadline: r.deadline, directUrl: r.directUrl || null })),
       signal: "HS-1.3b-01: Saved roles from live scan — input to Agent 1.4"
     };
@@ -1323,14 +1370,14 @@ function SavedPanel({ savedRoles, setSavedRoles, signals, dismissedRoles, setDis
       {high.length > 0 && (
         <>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#1E6B3C", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>High Relevance</div>
-          {high.map(r => !dismissedRoles?.has(r.id) && <SavedRoleRow key={r.id} role={r} onRemove={() => handleRemove(r.id)} signals={signals} onDismiss={handleDismiss} setSavedRoles={setSavedRoles} />)}
+          {high.map(r => !dismissedRoles?.has(r.id) && !closedRoles?.has(r.id) && <SavedRoleRow key={r.id} role={r} onRemove={() => handleRemove(r.id)} signals={signals} onDismiss={handleDismiss} onClose={handleClose} setSavedRoles={setSavedRoles} />)}
         </>
       )}
 
       {other.length > 0 && (
         <>
           <div style={{ fontSize: 10, fontWeight: 800, color: "#888", textTransform: "uppercase", letterSpacing: "0.06em", margin: "14px 0 8px" }}>Other Saved</div>
-          {other.map(r => !dismissedRoles?.has(r.id) && <SavedRoleRow key={r.id} role={r} onRemove={() => handleRemove(r.id)} signals={signals} onDismiss={handleDismiss} setSavedRoles={setSavedRoles} />)}
+          {other.map(r => !dismissedRoles?.has(r.id) && !closedRoles?.has(r.id) && <SavedRoleRow key={r.id} role={r} onRemove={() => handleRemove(r.id)} signals={signals} onDismiss={handleDismiss} onClose={handleClose} setSavedRoles={setSavedRoles} />)}
         </>
       )}
 
@@ -2085,13 +2132,14 @@ export default function App() {
   const [briefs, setBriefs] = useState([]);
   const [learnedSearches, setLearnedSearches] = useState([]);
   const [dismissedRoles, setDismissedRoles] = useState(new Set());
+  const [closedRoles, setClosedRoles] = useState(new Set());
   const [loading, setLoading] = useState(true);
   const [apiError, setApiError] = useState(null);
 
   useEffect(() => {
     registerApiErrorHandler(setApiError);
     async function init() {
-      const [org, broader, saved, sigs, lorgs, bfs, lsearches, dismissed] = await Promise.all([
+      const [org, broader, saved, sigs, lorgs, bfs, lsearches, dismissed, closed] = await Promise.all([
         loadScanResults("org"),
         loadScanResults("broader"),
         loadSavedRoles(),
@@ -2099,7 +2147,8 @@ export default function App() {
         loadLearnedOrgs(),
         loadBriefs(),
         loadLearnedSearches(),
-        loadDismissedRoles()
+        loadDismissedRoles(),
+        loadClosedRoles()
       ]);
       setOrgResults(org);
       setBroaderResults(broader);
@@ -2109,6 +2158,7 @@ export default function App() {
       setBriefs(bfs);
       setLearnedSearches(lsearches);
       setDismissedRoles(new Set((dismissed || []).map(r => r.id)));
+      setClosedRoles(new Set((closed || []).map(r => r.id)));
       setLoading(false);
     }
     init();
@@ -2208,6 +2258,7 @@ export default function App() {
             learnedOrgs={learnedOrgs} setLearnedOrgs={setLearnedOrgs}
             orgPerf={orgPerf} signals={signals}
             dismissedRoles={dismissedRoles} setDismissedRoles={setDismissedRoles}
+            closedRoles={closedRoles} setClosedRoles={setClosedRoles}
           />
         )}
         {tab === "broader" && (
@@ -2218,11 +2269,13 @@ export default function App() {
             broaderPerf={broaderPerf} setLearnedOrgs={setLearnedOrgs} signals={signals}
             learnedSearches={learnedSearches}
             dismissedRoles={dismissedRoles} setDismissedRoles={setDismissedRoles}
+            closedRoles={closedRoles} setClosedRoles={setClosedRoles}
           />
         )}
         {tab === "saved" && (
           <SavedPanel savedRoles={savedRoles} setSavedRoles={setSavedRoles} signals={signals}
             dismissedRoles={dismissedRoles} setDismissedRoles={setDismissedRoles}
+            closedRoles={closedRoles} setClosedRoles={setClosedRoles}
           />
         )}
         {tab === "add" && (
@@ -2245,7 +2298,7 @@ export default function App() {
       {/* ── FOOTER ── */}
       <div style={{ borderTop: "1px solid #E4E4E4", padding: "14px 20px", textAlign: "center", background: "#FFF" }}>
         <div style={{ fontSize: 11, color: "#BBB" }}>
-          Career Discovery System · v45 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
+          Career Discovery System · v46 &nbsp;·&nbsp; © {new Date().getFullYear()} &nbsp;·&nbsp; Built for Bella Daniel-Hunsicker
         </div>
       </div>
 
